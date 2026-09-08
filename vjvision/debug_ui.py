@@ -87,6 +87,7 @@ class DebugUI:
 
         self._configure_after_id: Optional[str] = None
         self.root.after(50, self._update_scrollbar_visibility)
+        self.root.after(150, self._fit_window_to_content)
         self.root.bind("<Configure>", self._on_root_configure)
 
     # -- helpers ----------------------------------------------------------
@@ -155,6 +156,28 @@ class DebugUI:
                 )
             except Exception:
                 pass
+
+    def _fit_window_to_content(self) -> None:
+        """Grow the default window so every panel is visible without
+        scrolling (capped to the screen work area). Called once after
+        the UI has been built."""
+        try:
+            self.scroll.update_idletasks()
+            canvas = self.scroll._parent_canvas
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            bbox = canvas.bbox("all")
+            if not bbox:
+                return
+            content_h = bbox[3] - bbox[1]
+            content_w = bbox[2] - bbox[0]
+            screen_h = self.root.winfo_screenheight()
+            screen_w = self.root.winfo_screenwidth()
+            # Allowance for window chrome / outer padding / scrollbar gutter.
+            win_h = int(min(screen_h - 60, content_h + 56))
+            win_w = int(min(screen_w - 40, max(1240, content_w + 60)))
+            self.root.geometry(f"{win_w}x{win_h}+40+20")
+        except Exception:
+            return
 
     def _build_widgets(self) -> None:
         pad = {"padx": 8, "pady": 6}
@@ -391,12 +414,6 @@ class DebugUI:
             command=self._on_font_change, width=220,
         )
         self.font_menu.pack(side="left")
-        self.font_preview = self._reg(
-            ctk.CTkLabel(self.display_frame, text=t("display.font_sample"),
-                         anchor="w", justify="left"),
-            "display.font_sample",
-        )
-        self.font_preview.pack(fill="x", padx=8, pady=(0, 4))
 
         viz_btn_row = ctk.CTkFrame(self.display_frame, fg_color="transparent")
         viz_btn_row.pack(fill="x", padx=8, pady=(0, 0))
@@ -424,6 +441,35 @@ class DebugUI:
             "display.fullscreen_hint",
         )
         self.fullscreen_hint.pack(anchor="w", padx=8, pady=(8, 8))
+
+        # GPU acceleration toggle (requires visualizer restart to apply).
+        from .config import SETTINGS
+        self.gpu_var = ctk.BooleanVar(value=SETTINGS.visual.gpu_acceleration)
+        self.gpu_checkbox = self._reg(
+            ctk.CTkCheckBox(
+                self.display_frame,
+                text=t("display.gpu_accel"),
+                variable=self.gpu_var,
+                command=self._on_gpu_toggle,
+            ),
+            "display.gpu_accel",
+        )
+        self.gpu_checkbox.pack(anchor="w", padx=8, pady=(0, 4))
+
+        # Demo mode: rotates a random cached cover so rendering can be
+        # tested without audio input. Runtime-only state (not persisted);
+        # a visualizer restart returns to standby, so the box resets too.
+        self.demo_var = ctk.BooleanVar(value=False)
+        self.demo_checkbox = self._reg(
+            ctk.CTkCheckBox(
+                self.display_frame,
+                text=t("display.demo_mode"),
+                variable=self.demo_var,
+                command=self._on_demo_toggle,
+            ),
+            "display.demo_mode",
+        )
+        self.demo_checkbox.pack(anchor="w", padx=8, pady=(0, 4))
 
         self.root.after(3000, self._poll_viz_alive)
 
@@ -720,16 +766,13 @@ class DebugUI:
             from .visualizer import _pick_font
             resolved = _pick_font(raw)
             f = pygame.font.SysFont(resolved, 24)
-            sample = t("display.font_sample")
-            surf = f.render(sample, True, (255, 255, 255))
+            surf = f.render(t("display.font_sample"), True, (255, 255, 255))
             import numpy as np
             arr = pygame.surfarray.array_alpha(surf)
-            non_zero = int((arr > 0).sum())
             total = arr.size
-            ratio = non_zero / total if total > 0 else 0.0
-            missing = ratio < 0.03
-            preview_text = sample + (t("display.font_missing") if missing else "")
-            self.font_preview.configure(text=preview_text)
+            ratio = int((arr > 0).sum()) / total if total > 0 else 0.0
+            if ratio < 0.03:
+                self._append_log(t("display.font_missing"))
         except Exception:
             pass
         self._send({"type": "settings", "font_name": raw})
@@ -783,6 +826,10 @@ class DebugUI:
                 log.error("viz_restart failed: %s", exc)
         threading.Thread(target=worker, daemon=True, name="UIVizRestart").start()
         self._append_log(t("display.viz_restarting"))
+        # Demo mode is runtime-only state; a restart returns to standby,
+        # so clear the demo checkbox to stay in sync.
+        if getattr(self, "demo_var", None) is not None:
+            self.demo_var.set(False)
         self.root.after(300, self._update_viz_status_label)
 
     def _on_viz_reset(self) -> None:
@@ -791,6 +838,24 @@ class DebugUI:
             return
         self.viz_mgr.reset()
         self._append_log(t("display.viz_reset_done"))
+
+    def _on_gpu_toggle(self) -> None:
+        from .config import SETTINGS, save_prefs
+        SETTINGS.visual.gpu_acceleration = bool(self.gpu_var.get())
+        save_prefs()
+        msg = t("display.gpu_on") if SETTINGS.visual.gpu_acceleration else t("display.gpu_off")
+        self._append_log(msg)
+        # The renderer is created at visualizer startup, so restart the
+        # visualizer process for the change to take effect.
+        if self.viz_mgr is not None:
+            self._on_viz_restart()
+
+    def _on_demo_toggle(self) -> None:
+        on = bool(self.demo_var.get())
+        # Runtime-only test mode: tell the visualizer to show (or stop
+        # showing) a rotating random cover. Not persisted to prefs.
+        self._send({"type": "settings", "demo_mode": on})
+        self._append_log(t("display.demo_on") if on else t("display.demo_off"))
 
     def _update_viz_status_label(self) -> None:
         if self.viz_mgr is None:

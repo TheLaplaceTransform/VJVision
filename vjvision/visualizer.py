@@ -1,4 +1,4 @@
-"""2nd-screen visualizer process.
+﻿"""2nd-screen visualizer process.
 
 Launched as a separate process (multiprocessing.Process(target=run, args=...)).
 Polls a multiprocessing.Queue for messages:
@@ -240,7 +240,22 @@ def _current_monitor_index() -> Optional[int]:
     return None
 
 
-def _load_cover(path: Optional[str], square_size: int):
+def _convert_alpha(surf: "pygame.Surface") -> "pygame.Surface":
+    """convert_alpha() that falls back to the raw surface.
+
+    ``convert_alpha()`` needs a live display surface; in the GPU render
+    path we create an SDL2 ``video.Window`` directly (no ``set_mode``), so
+    no conversion format is registered and convert_alpha raises "No
+    convert format has been set". The raw surface still works fine with
+    ``Texture.from_surface``, so we just use it unchanged in that case.
+    """
+    try:
+        return surf.convert_alpha()
+    except Exception:
+        return surf
+
+
+def _load_cover(path: Optional[str], square_size: int, gpu: bool = False):
     """Return (square_surface, raw_image_surface) or (None, None).
 
     The square is rendered at ``min(square_size, MAX_COVER_RENDER_PX)``
@@ -256,10 +271,12 @@ def _load_cover(path: Optional[str], square_size: int):
     except Exception as exc:
         log.warning("Could not load cover %s: %s", path, exc)
         return None, None
-    img = img.convert_alpha()
+    img = _convert_alpha(img)
 
-    # Internal render resolution is capped so rotozoom stays fast.
-    render_size = min(square_size, MAX_COVER_RENDER_PX)
+    # Internal render resolution. CPU path caps it so rotozoom stays
+    # fast; GPU path renders at full display size because the renderer
+    # rotates the texture in hardware (free) and we want full quality.
+    render_size = square_size if gpu else min(square_size, MAX_COVER_RENDER_PX)
 
     # Square (preserve aspect via center-crop) for the rotating cover.
     w, h = img.get_size()
@@ -394,7 +411,7 @@ def _load_standby_raw(path: str):
     """
     import pygame
     try:
-        raw = pygame.image.load(path).convert_alpha()
+        raw = _convert_alpha(pygame.image.load(path))
     except Exception as exc:
         log.warning("Standby image load failed (%s): %s", path, exc)
         return None, None
@@ -425,7 +442,7 @@ def _scale_standby(raw, screen_w: int, screen_h: int):
 def _make_flowing_bg(
     colors: list[tuple[int, int, int]],
     screen_w: int, screen_h: int,
-    t: float, energy: float = 0.0,
+    t: float, energy: float = 0.0, gpu: bool = False,
 ) -> "pygame.Surface":
     """Draw a full-screen, soft, flowing vector wave-field background.
 
@@ -453,7 +470,12 @@ def _make_flowing_bg(
 
     # Work at low resolution then upscale for both performance and
     # built-in softness. 160px wide is plenty for sub-2-cycle waves.
-    low_w, low_h = 160, max(1, int(160 * screen_h / screen_w))
+    # The GPU path returns this small surface and lets the renderer
+    # upscale it (bilinear filtering via SDL_RENDER_SCALE_QUALITY); 320px
+    # there keeps 4K fullscreen upscales crisp and band-free, while the
+    # field generation is still only ~64k cells (a millisecond or two).
+    base_w = 320 if gpu else 160
+    low_w, low_h = base_w, max(1, int(base_w * screen_h / screen_w))
     low_w, low_h = max(2, low_w), max(2, low_h)
 
     # Build the coordinate grid.
@@ -524,7 +546,13 @@ def _make_flowing_bg(
     arr = np.transpose(rgb, (1, 0, 2))   # (low_w, low_h, 3)
 
     surf = pygame.surfarray.make_surface(arr)
-    return pygame.transform.smoothscale(surf, (screen_w, screen_h))
+    if not gpu:
+        return pygame.transform.smoothscale(surf, (screen_w, screen_h))
+    # GPU path: return the small wave-field surface — the renderer
+    # scales it up to the screen size on the GPU with bilinear filtering
+    # (SDL_RENDER_SCALE_QUALITY=linear, set before SDL init), giving a
+    # smooth, mosaic-free background at zero per-frame CPU cost.
+    return surf
 
 
 # --------------------------------------------------------------------------- #
@@ -1022,10 +1050,24 @@ def _draw_text(surf, title, artist, album, rect, font, sub_font) -> None:
 # --------------------------------------------------------------------------- #
 def run(queue, display_index: int = 1) -> None:
     import math
+    import logging
     import pygame
     from . import config as _cfg
     from . import __version__ as _version
     from .config import SETTINGS
+
+    # Spawn-ed child does not inherit parent's logging config. Write
+    # visualizer logs to a file so GPU renderer info + FPS are visible.
+    try:
+        _fh = logging.FileHandler(
+            os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                         "visualizer.log"), mode="w", encoding="utf-8")
+        _fh.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+        log.addHandler(_fh)
+        log.setLevel(logging.INFO)
+    except Exception:
+        pass
 
     # This is a spawn-ed child process: it does NOT inherit the parent's
     # in-memory SETTINGS. Load persisted prefs explicitly so fullscreen
@@ -1037,6 +1079,30 @@ def run(queue, display_index: int = 1) -> None:
         log.warning("prefs load failed, using defaults: %s", _exc)
 
     _set_display_env(display_index)
+    # Bilinear texture scaling: the GPU background is a small wave-field
+    # surface (e.g. 320x200) that the renderer upscales to the full screen
+    # size (~8-16x). SDL's default scale mode is NEAREST, which turns the
+    # upscaled background into hard-edged mosaic blocks / colour bands.
+    # This hint is read when each texture is created and selects smooth
+    # bilinear filtering instead. Must be set before pygame.init().
+    os.environ["SDL_RENDER_SCALE_QUALITY"] = "linear"
+    # Declare per-monitor DPI awareness BEFORE SDL creates a window.
+    # Without this the process is DPI-virtualised: SDL reports a fallback
+    # 640x480 desktop in fullscreen (instead of the monitor's real native
+    # resolution, e.g. 2560x1600) and windowed content is bitmap-scaled
+    # (blurry). With it, the GPU renderer's drawable is the true native
+    # pixel size → crisp native-resolution rendering with vsync.
+    if os.name == "nt":
+        try:
+            import ctypes
+            # PROCESS_PER_MONITOR_DPI_AWARE = 2 (shcore, Win 8.1+)
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                import ctypes
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
     pygame.init()
     pygame.display.set_caption(f"VJVision 可视化输出  v{_version}")
 
@@ -1071,6 +1137,7 @@ def run(queue, display_index: int = 1) -> None:
         # Cross-fade snapshots — stored here so render-time blending
         # can access both old and new cover surfaces / colours.
         "old_cover_square": None,
+        "old_cover_texture": None,
         "old_dominant_colors": [(40, 40, 60), (70, 50, 90), (30, 60, 80)],
         # --- Standby (pre-first-track) image state ----------------------
         # standby_raw: full-resolution alpha surface (loaded once).
@@ -1114,8 +1181,21 @@ def run(queue, display_index: int = 1) -> None:
             rs["dominant_colors"] = [(40, 40, 60), (70, 50, 90), (30, 60, 80)]
             return
         cover_size = layout.cover_rect.width
-        square, raw = _load_cover(path, cover_size)
+        square, raw = _load_cover(path, cover_size, gpu=rs.get("renderer") is not None)
         rs["cover_square"] = square
+        # GPU path: upload the cover square as a texture once. The
+        # renderer rotates/scales it on the GPU each frame — no CPU
+        # rotozoom needed, even at 4K.
+        if rs.get("renderer") is not None and square is not None:
+            try:
+                from pygame._sdl2 import Texture
+                rs["cover_texture"] = Texture.from_surface(
+                    rs["renderer"], square)
+            except Exception as exc:
+                log.warning("cover texture upload failed: %s", exc)
+                rs["cover_texture"] = None
+        else:
+            rs["cover_texture"] = None
         # Extract dominant colours for the flowing background.
         if raw is not None:
             rs["dominant_colors"] = _extract_dominant_colors(raw, n=3)
@@ -1189,9 +1269,12 @@ def run(queue, display_index: int = 1) -> None:
 
         # Leaving windowed for fullscreen: remember the PHYSICAL window
         # size so exiting fullscreen restores exactly this geometry.
-        if want_fullscreen and rs["screen"] is not None:
+        if want_fullscreen:
             try:
-                pw, ph = pygame.display.get_window_size()
+                if rs.get("renderer") is not None:
+                    pw, ph = rs["renderer"].window.size
+                else:
+                    pw, ph = pygame.display.get_window_size()
                 if pw >= 200 and ph >= 150:
                     rs["win_w"], rs["win_h"] = int(pw), int(ph)
             except Exception:
@@ -1211,61 +1294,117 @@ def run(queue, display_index: int = 1) -> None:
                     size, flags, display=target_display, vsync=1)
             return pygame.display.set_mode(size, flags, vsync=1)
 
+        # GPU path runs first (creates its own video.Window). If it fails,
+        # the software fallback below uses set_mode — so do NOT set_mode
+        # unconditionally here, that created a duplicate window.
         screen = None
-        last_exc = None
-        # 1 & 2: requested mode, with then without the display kwarg.
-        # Windowed size always comes from the protected win_w/win_h,
-        # never from values that fullscreen resize events may have
-        # written into SETTINGS.
-        if want_fullscreen:
-            # Native resolution fullscreen. When GPU acceleration is on,
-            # the SDL2 hardware renderer handles all heavy lifting
-            # (cover rotation, scaling, compositing) on the GPU, so we
-            # can render at the display's full native resolution without
-            # the CPU becoming the bottleneck — the same approach
-            # PowerPoint uses for smooth fullscreen animation.
-            size, flags = (0, 0), pygame.FULLSCREEN
-        else:
-            size, flags = (rs["win_w"], rs["win_h"]), pygame.RESIZABLE
-        for use_display in (True, False):
-            try:
-                screen = _try(size, flags, use_display)
-                break
-            except TypeError:
-                # Old pygame without the ``display`` kwarg — fall through
-                # to the no-kwarg attempt.
-                last_exc = None
-                continue
-            except pygame.error as exc:
-                last_exc = exc
-                continue
 
-        # 3: fullscreen still failing — try display 0 explicitly.
-        if screen is None and want_fullscreen:
-            try:
-                screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-            except pygame.error as exc:
-                last_exc = exc
+        rs["screen"] = None
+        rs["screen_w"] = 0
+        rs["screen_h"] = 0
+        rs["renderer"] = None
+        rs["cover_texture"] = None
+        rs["bg_texture"] = None
 
-        # 4: last resort — windowed. State MUST reflect reality so the
-        # resize handler and the F/F11 toggles stay in sync.
-        if screen is None:
-            screen = pygame.display.set_mode(
-                (rs["win_w"], rs["win_h"]), pygame.RESIZABLE)
+        # --- SDL2 hardware renderer (GPU acceleration) ---
+        # When enabled, create the window + renderer directly (no
+        # set_mode — set_mode binds a software surface to the window and
+        # then a Renderer cannot be created on it). All heavy work
+        # (cover rotation, bg upscaling, compositing) runs on the GPU;
+        # vsync locks to the monitor refresh (no tearing).
+        if SETTINGS.visual.gpu_acceleration:
+            try:
+                from pygame._sdl2 import video
+                # Destroy previous renderer + window + their textures
+                # (re-init happens on resize / fullscreen toggle / startup
+                # config messages). Without this each reinit leaked a whole
+                # SDL window — that was the "two visualizer windows" bug.
+                for tkey in ("cover_texture", "old_cover_texture",
+                             "bg_texture"):
+                    rs[tkey] = None
+                if rs.get("sdl_window") is not None:
+                    try:
+                        rs["sdl_window"].destroy()
+                    except Exception:
+                        pass
+                    rs["sdl_window"] = None
+                rs["renderer"] = None
+                win_title = f"VJVision 可视化输出  v{_version}"
+                if want_fullscreen:
+                    # Borderless fullscreen at the monitor's CURRENT native
+                    # desktop resolution (no display-mode switch, no GPU
+                    # upscaling, vsync works). Requires per-monitor DPI
+                    # awareness (set above) or SDL falls back to 640x480.
+                    window = video.Window(win_title, fullscreen_desktop=True)
+                else:
+                    window = video.Window(
+                        win_title,
+                        size=(rs["win_w"], rs["win_h"]),
+                        resizable=True,
+                    )
+                rs["sdl_window"] = window
+                rs["renderer"] = video.Renderer(
+                    window, accelerated=1, vsync=1)
+                sw, sh = window.size
+                rs["screen_w"], rs["screen_h"] = int(sw), int(sh)
+                # On high-DPI displays the drawable surface has more
+                # pixels than the window's point size. Pin the renderer's
+                # logical coordinate space to the point size so our draws
+                # fill the whole window (otherwise content renders only in
+                # the top-left fraction and the rest is black).
+                rs["renderer"].logical_size = (int(sw), int(sh))
+                log.info(
+                    "GPU renderer initialised (accelerated+vsync) size=%dx%d",
+                    int(sw), int(sh),
+                )
+                # Software fallback path below is skipped.
+                screen = None
+            except Exception as exc:
+                log.warning("GPU renderer unavailable (%s) — falling back to software", exc)
+                rs["renderer"] = None
+                # fall through to set_mode software path
+
+        # --- Software path (set_mode + surface blitting) ---
+        if rs["renderer"] is None:
+            screen = None
+            last_exc = None
             if want_fullscreen:
-                log.warning("Fullscreen unavailable (%s) — staying windowed",
-                            last_exc)
-                rs["fullscreen"] = False
-                SETTINGS.visual.fullscreen = False
-                # state may not exist yet during the first (startup) call.
+                size, flags = (0, 0), pygame.FULLSCREEN
+            else:
+                size, flags = (rs["win_w"], rs["win_h"]), pygame.RESIZABLE
+            for use_display in (True, False):
                 try:
-                    state.status = "Fullscreen unavailable - windowed"
-                    state.status_until = time.monotonic() + 4.0
-                except NameError:
-                    pass
+                    screen = _try(size, flags, use_display)
+                    break
+                except TypeError:
+                    last_exc = None
+                    continue
+                except pygame.error as exc:
+                    last_exc = exc
+                    continue
 
-        rs["screen"] = screen
-        rs["screen_w"], rs["screen_h"] = screen.get_size()
+            if screen is None and want_fullscreen:
+                try:
+                    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                except pygame.error as exc:
+                    last_exc = exc
+
+            if screen is None:
+                screen = pygame.display.set_mode(
+                    (rs["win_w"], rs["win_h"]), pygame.RESIZABLE)
+                if want_fullscreen:
+                    log.warning("Fullscreen unavailable (%s) — staying windowed",
+                                last_exc)
+                    rs["fullscreen"] = False
+                    SETTINGS.visual.fullscreen = False
+                    try:
+                        state.status = "Fullscreen unavailable - windowed"
+                        state.status_until = time.monotonic() + 4.0
+                    except NameError:
+                        pass
+
+            rs["screen"] = screen
+            rs["screen_w"], rs["screen_h"] = screen.get_size()
 
         # Windowed: the actual surface size is ground truth (SDL may
         # adjust the requested size on restore). Persist it into BOTH the
@@ -1302,13 +1441,9 @@ def run(queue, display_index: int = 1) -> None:
         _reload_cover_assets(rs["current_cover_path"], layout)
         # Re-scale the standby image for the new resolution too.
         _reload_standby()
-        if rs.get("scaled_render"):
-            log.info("Visualizer display=%s render=%sx%s (native %sx%s, GPU-upscaled) fullscreen=%s",
-                     display_index, rs["screen_w"], rs["screen_h"],
-                     rs["native_w"], rs["native_h"], rs["fullscreen"])
-        else:
-            log.info("Visualizer display=%s size=%sx%s fullscreen=%s",
-                     display_index, rs["screen_w"], rs["screen_h"], rs["fullscreen"])
+        log.info("Visualizer display=%s size=%sx%s fullscreen=%s gpu=%s",
+                 display_index, rs["screen_w"], rs["screen_h"],
+                 rs["fullscreen"], rs["renderer"] is not None)
 
     _reinit_display()
 
@@ -1342,6 +1477,55 @@ def run(queue, display_index: int = 1) -> None:
             rs["text_cache"] = surf
             rs["text_cache_key"] = key
         return rs["text_cache"]
+
+    def _apply_demo(on: bool) -> None:
+        """Toggle demo mode on/off (driven by the control panel, not a
+        hotkey).
+
+        Demo mode displays a rotating random album cover so GPU
+        rotation / rendering can be verified without any audio input.
+        Turning it off returns to the standby screen.
+        """
+        rs["demo_mode"] = bool(on)
+        if on:
+            import glob as _glob
+            import random as _random
+            _covers = _glob.glob(os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "cache", "covers", "*.*"))
+            demo_cover = _random.choice(_covers) if _covers else None
+            state.old_title = state.title
+            state.old_artist = state.artist
+            state.old_album = state.album
+            state.old_cover_path = state.cover_path
+            state.title = "GPU Demo"
+            state.artist = "Hardware Acceleration Test"
+            state.album = "Demo mode"
+            state.cover_path = demo_cover
+            state.fade_active = True
+            state.fade_progress = 0.0
+            rs["old_dominant_colors"] = list(rs["dominant_colors"])
+            rs["standby_fadeout"] = bool(rs.get("standby_surf"))
+            if demo_cover and demo_cover != rs["current_cover_path"]:
+                rs["current_cover_path"] = demo_cover
+                layout = _compute_layout(
+                    rs["screen_w"], rs["screen_h"])
+                _reload_cover_assets(demo_cover, layout)
+            log.info("Demo mode ON (cover=%s)", demo_cover)
+        else:
+            state.title = ""
+            state.artist = ""
+            state.album = ""
+            state.cover_path = None
+            state.fade_active = False
+            state.fade_progress = 0.0
+            rs["current_cover_path"] = None
+            rs["standby_fadeout"] = False
+            rs["dominant_colors"] = (
+                list(rs["standby_colors"]) if rs.get("standby_colors")
+                else [(40, 40, 60), (70, 50, 90), (30, 60, 80)])
+            state.angle = 0.0
+            log.info("Demo mode OFF")
 
     running = True
     while running:
@@ -1401,6 +1585,7 @@ def run(queue, display_index: int = 1) -> None:
                     # Keep fading bg colors and old cover surface too.
                     rs["old_dominant_colors"] = list(rs["dominant_colors"])
                     rs["old_cover_square"] = rs["cover_square"]
+                    rs["old_cover_texture"] = rs.get("cover_texture")
                     # Rotation caches are for the current artwork; reset
                     # so the fade re-renders from the new angle.
                     rs["old_cover_rot_cache"] = None
@@ -1488,6 +1673,8 @@ def run(queue, display_index: int = 1) -> None:
                     if new_img != str(SETTINGS.visual.standby_image or ""):
                         SETTINGS.visual.standby_image = new_img
                         _reload_standby()
+                if "demo_mode" in msg:
+                    _apply_demo(bool(msg["demo_mode"]))
             elif mtype == "status":
                 state.status = msg.get("text", "")
                 state.status_until = time.monotonic() + 5.0
@@ -1616,6 +1803,8 @@ def run(queue, display_index: int = 1) -> None:
             img_fade = 1.0
             content_p = 1.0
 
+        gpu = rs.get("renderer") is not None
+
         # --- Background ---
         # During cross-fade, mix old dominant colours with new ones so the
         # flowing background smoothly shifts between track-specific palettes
@@ -1653,223 +1842,290 @@ def run(queue, display_index: int = 1) -> None:
             # rotation is scheduled on different frames (see cover
             # section) so no single frame pays both costs.
             cache_ok = (
+                rs.get("bg_texture") is not None
+            ) if gpu else (
                 rs["bg_cache"] is not None
                 and rs["bg_cache"].get_size() == (screen_w, screen_h)
             )
             if not cache_ok or rs["frame_no"] % 3 == 0:
                 rs["bg_cache"] = _make_flowing_bg(
-                    bg_colors, screen_w, screen_h, t_now, energy,
+                    bg_colors, screen_w, screen_h, t_now, energy, gpu=gpu,
                 )
-            screen.blit(rs["bg_cache"], (0, 0))
+                if gpu:
+                    # Upload the small wave-field as a GPU texture; the
+                    # renderer scales it to full screen for free.
+                    try:
+                        from pygame._sdl2 import Texture
+                        # Old texture is GC'd when overwritten.
+                        rs["bg_texture"] = Texture.from_surface(
+                            rs["renderer"], rs["bg_cache"])
+                    except Exception as exc:
+                        log.warning("bg texture upload failed: %s", exc)
+            if gpu:
+                rs["renderer"].clear()
+                if rs.get("bg_texture") is not None:
+                    rs["bg_texture"].draw(dstrect=(0, 0, screen_w, screen_h))
+            else:
+                screen.blit(rs["bg_cache"], (0, 0))
         elif rs["cover_bg"] is not None:
             rs["bg_cache"] = None
-            screen.blit(rs["cover_bg"], (0, 0))
+            if gpu:
+                try:
+                    from pygame._sdl2 import Texture
+                    rs["bg_texture"] = Texture.from_surface(
+                        rs["renderer"], rs["cover_bg"])
+                except Exception:
+                    rs["bg_texture"] = None
+                rs["renderer"].clear()
+                if rs["bg_texture"] is not None:
+                    rs["bg_texture"].draw(dstrect=(0, 0, screen_w, screen_h))
+            else:
+                screen.blit(rs["cover_bg"], (0, 0))
         else:
             rs["bg_cache"] = None
-            screen.fill((20, 20, 30))
+            if gpu:
+                rs["renderer"].draw_color = (20, 20, 30, 255)
+                rs["renderer"].clear()
+            else:
+                screen.fill((20, 20, 30))
 
         # --- Cover (cross-fade during track changes; hidden in standby) ---
         if standby or (fade_from_standby and content_p <= 0.0):
             pass   # standby screen / fade-out + gap: no cover yet
         elif state.fade_active and rs["old_cover_square"] is not None:
-            # Cross-fade: old cover fades out as new cover fades in.
-            # Alpha ramp keeps total opacity ≈ 1.0 throughout, avoiding
-            # the "flash to black" that a pure fade-out-then-fade-in
-            # would produce.
             old_alpha = int((1.0 - fade_p) * 255)
             new_alpha = int(fade_p * 255)
+            # SDL2 origin is relative to the dstrect's top-left corner,
+            # NOT absolute screen coords — use half the cover size.
+            rot_origin = (layout.cover_rect.width // 2,
+                          layout.cover_rect.height // 2)
+            cover_rect = layout.cover_rect
 
-            # At 4K rotozoom of a ~960 px alpha square costs ~10 ms. Two
-            # of them per frame would blow the 16.7 ms budget, so we
-            # stagger them: old rotates on frame%3==1, new on frame%3==2.
-            # The angle advances only ~1.5 deg/frame, so a one-frame
-            # difference is invisible.
-            cover_px = int(rs["old_cover_square"].get_width())
-            display_scale = layout.cover_rect.width / cover_px
-            frame_mod = rs["frame_no"] % 3
-            rotate_old = cover_px <= 640 or frame_mod == 1
-            rotate_new = cover_px <= 640 or frame_mod == 2
-            if rotate_old or rs["old_cover_rot_cache"] is None:
-                rs["old_cover_rot_cache"] = pygame.transform.rotozoom(
-                    rs["old_cover_square"], state.angle, 1.0,
-                )
-                if display_scale != 1.0:
-                    _r = rs["old_cover_rot_cache"]
-                    rs["old_cover_disp_cache"] = pygame.transform.smoothscale(
-                        _r, (int(_r.get_width() * display_scale),
-                             int(_r.get_height() * display_scale)))
-                else:
-                    rs["old_cover_disp_cache"] = None
-            if rotate_new or rs["new_cover_rot_cache"] is None:
-                rs["new_cover_rot_cache"] = (
-                    pygame.transform.rotozoom(
-                        rs["cover_square"], state.angle, 1.0,
-                    ) if rs["cover_square"] is not None else None
-                )
-                if display_scale != 1.0 and rs["new_cover_rot_cache"] is not None:
-                    _r = rs["new_cover_rot_cache"]
-                    rs["new_cover_disp_cache"] = pygame.transform.smoothscale(
-                        _r, (int(_r.get_width() * display_scale),
-                             int(_r.get_height() * display_scale)))
-                else:
-                    rs["new_cover_disp_cache"] = None
-
-            old_rot = (rs["old_cover_disp_cache"]
-                       if rs["old_cover_disp_cache"] is not None
-                       else rs["old_cover_rot_cache"])
-            new_rot = (rs["new_cover_disp_cache"]
-                       if rs["new_cover_disp_cache"] is not None
-                       else rs["new_cover_rot_cache"])
-            center = layout.cover_rect.center
-
-            # Blit directly to screen — no intermediate composite surface
-            # (allocating a ~1500 px SRCALPHA surface every frame was an
-            # extra ~5 ms at 4K). set_alpha on SRCALPHA surfaces modulates
-            # per-pixel alpha in pygame-ce, so the circle mask is honoured.
-            old_rot.set_alpha(old_alpha)
-            screen.blit(old_rot, old_rot.get_rect(center=center).topleft)
-            if new_rot is not None:
-                new_rot.set_alpha(new_alpha)
-                screen.blit(new_rot, new_rot.get_rect(center=center).topleft)
-            # Reset alpha so the cached surfaces render at full opacity
-            # the next time they're used outside a fade.
-            rs["old_cover_rot_cache"].set_alpha(255)
-            if rs["new_cover_rot_cache"] is not None:
-                rs["new_cover_rot_cache"].set_alpha(255)
-        elif rs["cover_square"] is not None:
-            # The cover square is rendered at a capped internal resolution
-            # (MAX_COVER_RENDER_PX) so rotozoom stays fast. After rotating
-            # we scale the result up to the on-screen display size — the
-            # circle mask hides any upscaling softness. BOTH the rotated
-            # surface and its upscaled version are cached: smoothscale of
-            # a ~1350 px SRCALPHA surface to ~1900 px costs ~10 ms at 4K,
-            # so doing it every frame (instead of only on rotation frames)
-            # was the real FPS killer.
-            cover_px = int(rs["cover_square"].get_width())
-            display_scale = layout.cover_rect.width / cover_px
-            # Rotate every frame for small covers (rotozoom ≤ ~5 ms up
-            # to ~640 px). For larger covers rotate every 3rd frame and
-            # blit the cached rotation on the others — the angle still
-            # advances every frame so motion stays smooth.
-            rotate_now = cover_px <= 640 or rs["frame_no"] % 3 == 1
-            if rotate_now or rs["cover_rot_cache"] is None:
-                rs["cover_rot_cache"] = pygame.transform.rotozoom(
-                    rs["cover_square"], state.angle, 1.0
-                )
-                # Re-upscale to display size only when the rotation
-                # cache is refreshed.
-                if display_scale != 1.0:
-                    _rot = rs["cover_rot_cache"]
-                    dw = max(1, int(_rot.get_width() * display_scale))
-                    dh = max(1, int(_rot.get_height() * display_scale))
-                    rs["cover_disp_cache"] = pygame.transform.smoothscale(
-                        _rot, (dw, dh))
-                else:
-                    rs["cover_disp_cache"] = None
-            rotated = (
-                rs["cover_disp_cache"]
-                if rs["cover_disp_cache"] is not None
-                else rs["cover_rot_cache"]
-            )
-            if fade_from_standby:
-                # Cover fades in only during stage 3 (after the gap).
-                rotated.set_alpha(int(content_p * 255))
+            if gpu and rs.get("old_cover_texture") is not None:
+                # GPU: draw both covers with hardware rotation + alpha.
+                old_tex = rs["old_cover_texture"]
+                old_tex.alpha = old_alpha
+                old_tex.draw(dstrect=cover_rect, angle=state.angle,
+                             origin=rot_origin)
+                new_tex = rs.get("cover_texture")
+                if new_tex is not None:
+                    new_tex.alpha = new_alpha
+                    new_tex.draw(dstrect=cover_rect, angle=state.angle,
+                                 origin=rot_origin)
             else:
-                # Ensure the cached surface is at full opacity after a
-                # previous fade-in frame left it at a reduced alpha.
-                rotated.set_alpha(255)
-            rect = rotated.get_rect(center=layout.cover_rect.center)
-            screen.blit(rotated, rect.topleft)
+                # CPU cross-fade (kept for the software fallback path).
+                cover_px = int(rs["old_cover_square"].get_width())
+                display_scale = layout.cover_rect.width / cover_px
+                frame_mod = rs["frame_no"] % 3
+                rotate_old = cover_px <= 640 or frame_mod == 1
+                rotate_new = cover_px <= 640 or frame_mod == 2
+                if rotate_old or rs["old_cover_rot_cache"] is None:
+                    rs["old_cover_rot_cache"] = pygame.transform.rotozoom(
+                        rs["old_cover_square"], state.angle, 1.0,
+                    )
+                    if display_scale != 1.0:
+                        _r = rs["old_cover_rot_cache"]
+                        rs["old_cover_disp_cache"] = pygame.transform.smoothscale(
+                            _r, (int(_r.get_width() * display_scale),
+                                 int(_r.get_height() * display_scale)))
+                    else:
+                        rs["old_cover_disp_cache"] = None
+                if rotate_new or rs["new_cover_rot_cache"] is None:
+                    rs["new_cover_rot_cache"] = (
+                        pygame.transform.rotozoom(
+                            rs["cover_square"], state.angle, 1.0,
+                        ) if rs["cover_square"] is not None else None
+                    )
+                    if display_scale != 1.0 and rs["new_cover_rot_cache"] is not None:
+                        _r = rs["new_cover_rot_cache"]
+                        rs["new_cover_disp_cache"] = pygame.transform.smoothscale(
+                            _r, (int(_r.get_width() * display_scale),
+                                 int(_r.get_height() * display_scale)))
+                    else:
+                        rs["new_cover_disp_cache"] = None
+                old_rot = (rs["old_cover_disp_cache"]
+                           if rs["old_cover_disp_cache"] is not None
+                           else rs["old_cover_rot_cache"])
+                new_rot = (rs["new_cover_disp_cache"]
+                           if rs["new_cover_disp_cache"] is not None
+                           else rs["new_cover_rot_cache"])
+                old_rot.set_alpha(old_alpha)
+                screen.blit(old_rot, old_rot.get_rect(center=center).topleft)
+                if new_rot is not None:
+                    new_rot.set_alpha(new_alpha)
+                    screen.blit(new_rot, new_rot.get_rect(center=center).topleft)
+                rs["old_cover_rot_cache"].set_alpha(255)
+                if rs["new_cover_rot_cache"] is not None:
+                    rs["new_cover_rot_cache"].set_alpha(255)
+        elif rs["cover_square"] is not None:
+            if gpu and rs.get("cover_texture") is not None:
+                # GPU: single draw call with hardware rotation. The angle
+                # advances every frame and the GPU rotates the texture for
+                # free — no CPU rotozoom, no smoothscale, at any res.
+                tex = rs["cover_texture"]
+                if fade_from_standby:
+                    tex.alpha = int(content_p * 255)
+                else:
+                    tex.alpha = 255
+                tex.draw(dstrect=layout.cover_rect, angle=state.angle,
+                         origin=(layout.cover_rect.width // 2,
+                                 layout.cover_rect.height // 2))
+            else:
+                # The cover square is rendered at a capped internal
+                # resolution (MAX_COVER_RENDER_PX) so rotozoom stays fast.
+                cover_px = int(rs["cover_square"].get_width())
+                display_scale = layout.cover_rect.width / cover_px
+                rotate_now = cover_px <= 640 or rs["frame_no"] % 3 == 1
+                if rotate_now or rs["cover_rot_cache"] is None:
+                    rs["cover_rot_cache"] = pygame.transform.rotozoom(
+                        rs["cover_square"], state.angle, 1.0
+                    )
+                    if display_scale != 1.0:
+                        _rot = rs["cover_rot_cache"]
+                        dw = max(1, int(_rot.get_width() * display_scale))
+                        dh = max(1, int(_rot.get_height() * display_scale))
+                        rs["cover_disp_cache"] = pygame.transform.smoothscale(
+                            _rot, (dw, dh))
+                    else:
+                        rs["cover_disp_cache"] = None
+                rotated = (
+                    rs["cover_disp_cache"]
+                    if rs["cover_disp_cache"] is not None
+                    else rs["cover_rot_cache"]
+                )
+                if fade_from_standby:
+                    rotated.set_alpha(int(content_p * 255))
+                else:
+                    rotated.set_alpha(255)
+                rect = rotated.get_rect(center=layout.cover_rect.center)
+                screen.blit(rotated, rect.topleft)
         elif not fade_from_standby:
             r = layout.cover_rect.width // 2
-            pygame.draw.circle(
-                screen, PALETTE_PLACEHOLDER,
-                layout.cover_rect.center, r, 4,
-            )
+            if gpu:
+                import math
+                cx, cy = layout.cover_rect.center
+                n = 32
+                rs["renderer"].draw_color = PALETTE_PLACEHOLDER + (255,)
+                for i in range(n):
+                    a0 = 2 * math.pi * i / n
+                    a1 = 2 * math.pi * (i + 1) / n
+                    p0 = (cx + int(r * math.cos(a0)),
+                          cy + int(r * math.sin(a0)))
+                    p1 = (cx + int(r * math.cos(a1)),
+                          cy + int(r * math.sin(a1)))
+                    rs["renderer"].draw_line(p0, p1)
+            else:
+                pygame.draw.circle(
+                    screen, PALETTE_PLACEHOLDER,
+                    layout.cover_rect.center, r, 4,
+                )
 
         # --- Standby image (centered; fades out on first track) ---
         standby_img = rs.get("standby_surf")
         if standby_img is not None and img_fade > 0.0 and (
                 standby or fade_from_standby):
-            # Use set_alpha to modulate the surface alpha instead of
-            # copying the surface and multiplying its alpha channel
-            # pixel-by-pixel via surfarray. At 4K the standby image can
-            # be ~1200 px tall, so the copy + float32 multiply + uint8
-            # cast was ~3-5 ms per frame and garbage-collected a big
-            # array every time. set_alpha on an SRCALPHA surface in
-            # pygame-ce multiplies with the per-pixel alpha, so the
-            # image's own transparency is preserved.
             standby_img.set_alpha(int(img_fade * 255))
             img_rect = standby_img.get_rect(
                 center=(screen_w // 2, screen_h // 2))
-            screen.blit(standby_img, img_rect.topleft)
-            # Restore full opacity so the cached surface is ready for
-            # the next standby cycle.
+            if gpu:
+                from pygame._sdl2 import Texture
+                sb_tex = Texture.from_surface(rs["renderer"], standby_img)
+                sb_tex.alpha = int(img_fade * 255)
+                sb_tex.draw(dstrect=img_rect)
+            else:
+                screen.blit(standby_img, img_rect.topleft)
             standby_img.set_alpha(255)
 
         # --- Spectrum (hidden on the standby screen and during the
         # image fade-out + gap; appears with the cover/text reveal) ---
         if not standby and not (fade_from_standby and content_p <= 0.0):
-            if state.style == "bar":
-                # Resize peak_holds to match current bin count (defensive - if FFT
-                # settings change at runtime the two arrays must stay aligned).
-                if state.peak_holds.shape[0] != state.bins.shape[0]:
-                    state.peak_holds = np.zeros_like(state.bins)
-                if state.peak_timers.shape[0] != state.bins.shape[0]:
-                    state.peak_timers = np.zeros(state.bins.shape[0], dtype=np.int32)
-                _draw_bar(screen, state.bins, layout.spectrum_rect,
-                          peak_holds=state.peak_holds,
-                          peak_timers=state.peak_timers)
-            elif state.style == "wave":
-                _draw_wave(screen, state.bins, layout.spectrum_rect)
-            elif state.style == "mirror":
-                _draw_mirror(screen, state.bins, layout.spectrum_rect)
+            if gpu:
+                # Render spectrum to a temp TRANSPARENT surface, then
+                # upload as a texture and alpha-blend it over the flowing
+                # background. (An opaque surface here would paint the whole
+                # spectrum panel black and hide the background.)
+                sp = layout.spectrum_rect
+                spec_surf = pygame.Surface((sp.width, sp.height),
+                                           pygame.SRCALPHA)
+                if state.style == "bar":
+                    if state.peak_holds.shape[0] != state.bins.shape[0]:
+                        state.peak_holds = np.zeros_like(state.bins)
+                    if state.peak_timers.shape[0] != state.bins.shape[0]:
+                        state.peak_timers = np.zeros(state.bins.shape[0], dtype=np.int32)
+                    _draw_bar(spec_surf, state.bins,
+                              pygame.Rect(0, 0, sp.width, sp.height),
+                              peak_holds=state.peak_holds,
+                              peak_timers=state.peak_timers)
+                elif state.style == "wave":
+                    _draw_wave(spec_surf, state.bins,
+                               pygame.Rect(0, 0, sp.width, sp.height))
+                elif state.style == "mirror":
+                    _draw_mirror(spec_surf, state.bins,
+                                 pygame.Rect(0, 0, sp.width, sp.height))
+                from pygame._sdl2 import Texture
+                spec_tex = Texture.from_surface(rs["renderer"], spec_surf)
+                spec_tex.draw(dstrect=sp)
+            else:
+                if state.style == "bar":
+                    if state.peak_holds.shape[0] != state.bins.shape[0]:
+                        state.peak_holds = np.zeros_like(state.bins)
+                    if state.peak_timers.shape[0] != state.bins.shape[0]:
+                        state.peak_timers = np.zeros(state.bins.shape[0], dtype=np.int32)
+                    _draw_bar(screen, state.bins, layout.spectrum_rect,
+                              peak_holds=state.peak_holds,
+                              peak_timers=state.peak_timers)
+                elif state.style == "wave":
+                    _draw_wave(screen, state.bins, layout.spectrum_rect)
+                elif state.style == "mirror":
+                    _draw_mirror(screen, state.bins, layout.spectrum_rect)
 
         # --- Info text (cross-fade during track changes; hidden in standby) ---
+        def _draw_text_surf(surf, alpha):
+            """Blit a text surface (GPU texture or CPU blit)."""
+            if gpu:
+                from pygame._sdl2 import Texture
+                tt = Texture.from_surface(rs["renderer"], surf)
+                tt.alpha = alpha
+                tt.draw(dstrect=layout.text_rect)
+            else:
+                surf.set_alpha(alpha)
+                screen.blit(surf, layout.text_rect.topleft)
+
         if standby or (fade_from_standby and content_p <= 0.0):
-            pass   # no text on the standby screen / fade-out + gap
+            pass
         elif fade_from_standby:
-            # Stage 3: text fades in after the 0.5 s gap. Cached surface
-            # with per-frame alpha ramp.
             text_surf = _get_text_surf(layout)
-            text_surf.set_alpha(int(content_p * 255))
-            screen.blit(text_surf, layout.text_rect.topleft)
+            _draw_text_surf(text_surf, int(content_p * 255))
         elif state.fade_active and (state.old_title or state.old_artist or state.old_album):
-            # Render old and new text on separate surfaces with alpha ramps.
-            # The old text fades out while the new text fades in on top.
             text_w = layout.text_rect.width
             text_h = layout.text_rect.height
             old_text_surf = pygame.Surface((text_w, text_h), pygame.SRCALPHA)
-
             _draw_text(
                 old_text_surf,
                 state.old_title, state.old_artist, state.old_album,
                 pygame.Rect(0, 0, text_w, text_h),
                 rs["font"], rs["sub_font"],
             )
-            # New text reuses the content-cached surface (alpha ramped).
             new_text_surf = _get_text_surf(layout)
-
-            old_text_surf.set_alpha(int((1 - fade_p) * 255))
-            new_text_surf.set_alpha(int(fade_p * 255))
-            screen.blit(old_text_surf, layout.text_rect.topleft)
-            screen.blit(new_text_surf, layout.text_rect.topleft)
+            _draw_text_surf(old_text_surf, int((1 - fade_p) * 255))
+            _draw_text_surf(new_text_surf, int(fade_p * 255))
         else:
             text_surf = _get_text_surf(layout)
             if state.tentative:
-                # Gentle pulse: alpha oscillates 0.45→1.0 over ~1.6s.
-                # Signals "probably this track, not yet locked in".
                 pulse = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(time.time() * 3.9))
-                text_surf.set_alpha(int(pulse * 255))
+                alpha = int(pulse * 255)
             else:
-                text_surf.set_alpha(255)
-            screen.blit(text_surf, layout.text_rect.topleft)
+                alpha = 255
+            _draw_text_surf(text_surf, alpha)
 
         # Note: the top-left recognition status overlay ("Matching…",
         # "No match", "Listening…", "Mixing…") was removed at the user's
         # request — it's noise on the performance screen.  Operational
         # messages (e.g. fullscreen fallback) are still written to the log.
 
-        pygame.display.flip()
+        if gpu:
+            rs["renderer"].present()
+        else:
+            pygame.display.flip()
 
     pygame.quit()

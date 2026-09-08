@@ -12,6 +12,7 @@ VJVision listens to the DJ booth output, auto-recognises the currently playing t
 
 - **自动曲目识别**：基于 Dejavu 音频指纹算法，实时识别正在播放的歌曲（支持 12 秒采样窗口）
 - **音频响应可视化**：pygame 渲染的频谱柱、波形、镜像三种样式，封面随节拍旋转
+- **GPU 硬件加速**：SDL2 GPU 渲染 + 垂直同步，原生分辨率全屏不撕裂、高分辨率屏稳定 60fps（可在控制台开关，失败自动回退软件渲染）
 - **混音过渡脉动**：检测到 DJ 切歌/混音时，视觉进入脉动过渡状态，平滑切换到下一首歌
 - **中英双语界面**：右上角可随时切换中文/英文，PEAK 指示灯始终显示 PEAK
 - **多显示器支持**：控制界面在主屏，可视化窗口投放到副屏
@@ -19,6 +20,7 @@ VJVision listens to the DJ booth output, auto-recognises the currently playing t
 
 - **Automatic track recognition** — Dejavu audio fingerprinting, real-time (12 s sampling window)
 - **Audio-reactive visualizer** — pygame bar / wave / mirror spectrum styles, cover rotates with the beat
+- **GPU hardware acceleration** — SDL2 GPU rendering with vsync: tear-free native-resolution fullscreen, steady 60fps on hi-DPI screens (toggle in the console; auto-falls back to software rendering)
 - **Mix-transition pulse** — detects DJ cross-fades and pulses the display for a smooth switch
 - **Bilingual UI (中文 / English)** — switch from the top-right corner; PEAK indicator always shows "PEAK"
 - **Multi-display support** — control panel on primary, visualizer on secondary
@@ -69,6 +71,12 @@ Add library → Analyze fingerprints → Select audio device → Start capture �
      Adjust spectrum style, rotation speed, and beat-reactive rotation
    - 可上传待机 LOGO 图片（识别到第一首歌前显示）
      Upload a standby LOGO image (shown before the first track is recognised)
+   - 「GPU 硬件加速」开关：显卡渲染 + 垂直同步，切换后自动重启可视化窗口
+     The 「GPU hardware acceleration」toggle enables GPU rendering with vsync; the visualizer restarts automatically after switching
+   - 「演示模式」复选框：无音频输入时旋转随机封面，用于测试渲染效果
+     The 「Demo mode」checkbox rotates a random cover without audio input, for testing the render
+   - 点击可视化窗口后按 **F / F11** 全屏（原生分辨率），**Esc** 退出全屏
+     Click the visualizer window, then press **F / F11** for native-resolution fullscreen; **Esc** exits fullscreen
 
 4. **开始 / Start**
    - 点击「开始采集 / Start Capture」，副屏即出现可视化窗口
@@ -100,7 +108,7 @@ python -m PyInstaller VJVision.spec --noconfirm --clean
 Or use the one-click release script (build + commit + push + create GitHub Release):
 
 ```powershell
-.\release.ps1 -Version 1.1.4 -Notes "bilingual UI"
+.\release.ps1 -Version 1.2.0 -Notes "GPU acceleration"
 ```
 
 ## 数据目录说明 / Data Directories
