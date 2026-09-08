@@ -478,6 +478,88 @@ class MatcherThread(threading.Thread):
 
         if result.confidence < MIN_ACCEPT_CONFIDENCE:
             # --- Tentative zone ---
+            # A different song showing up here (even at low confidence)
+            # means a cross-fade may be starting.  Trigger the mix pulse
+            # immediately instead of waiting for a ≥0.30 hit — otherwise
+            # the pulsing display kicks in far too late into the transition.
+            if (
+                not self._in_mix
+                and self._current_track_path is not None
+                and result.file_path != self._current_track_path
+            ):
+                self._in_mix = True
+                self._log(
+                    "🎚 Mix detected (tentative zone) — different song "
+                    "signal. Pulsing current track."
+                )
+                self._send_viz({"type": "status", "text": "Mixing…"})
+                try:
+                    track = extract_track(self._current_track_path)
+                except Exception:
+                    track = Track(self._current_track_path, "", "", "", None)
+                self._send_viz({
+                    "type": "track",
+                    "title": track.title,
+                    "artist": track.artist,
+                    "album": track.album,
+                    "cover": track.cover_path,
+                    "tentative": True,
+                })
+                return
+
+            # During a DJ mix we hold the currently-displayed track and let
+            # it pulse — low-confidence hits on a different song must NOT
+            # flip the display to a tentative preview of the incoming song.
+            # The mix stays visually "soft" (pulsing) until a high-confidence
+            # confirmed hit settles it.
+            if self._in_mix and self._current_track_path is not None:
+                if result.file_path == self._current_track_path:
+                    # The outgoing track won the mix — stop pulsing and
+                    # return to a steady confirmed display.
+                    self._in_mix = False
+                    self._log("Mix ended — current track re-confirmed.")
+                    try:
+                        track = extract_track(self._current_track_path)
+                    except Exception:
+                        track = Track(self._current_track_path, "", "", "", None)
+                    self._send_viz({
+                        "type": "track",
+                        "title": track.title,
+                        "artist": track.artist,
+                        "album": track.album,
+                        "cover": track.cover_path,
+                    })
+                # Different song during a mix → keep holding the current
+                # display (which is already pulsing).
+                return
+
+            # If this is the already-confirmed current track, just keep
+            # showing it as-is — a confidence dip during a quiet passage
+            # must NOT downgrade a confirmed display back to pulsing.
+            # Re-send the confirmed track (no tentative flag) in case a
+            # competing-version tentative preview is currently on screen.
+            if (
+                self._current_track_path is not None
+                and result.file_path == self._current_track_path
+            ):
+                # A confirmed hit on the current track ends any active mix
+                # (the outgoing track has won) — stop the pulsing.
+                if self._in_mix:
+                    self._in_mix = False
+                    self._log("Mix ended — current track re-confirmed.")
+                try:
+                    track = extract_track(self._current_track_path)
+                except Exception:
+                    track = Track(self._current_track_path, "", "", "", None)
+                self._send_viz({
+                    "type": "track",
+                    "title": track.title,
+                    "artist": track.artist,
+                    "album": track.album,
+                    "cover": track.cover_path,
+                })
+                return
+
             # Once a tentative preview is on screen, LOCK to that song —
             # don't flip-flop between competing versions every query.
             # Multi-version songs (vocal / Inst / CN / JP …) constantly
@@ -624,19 +706,52 @@ class MatcherThread(threading.Thread):
             from collections import Counter
             counts = Counter(self._match_song_history)
             top_song, top_count = counts.most_common(1)[0]
-            # If the top song appears ≤ 2 times out of 4, it's bouncing —
-            # no clear winner yet → we're in a mix.
-            if top_count <= 2 and not self._in_mix:
+            # If the top song appears ≤ 3 times out of 4, another song has
+            # shown up at least once → likely a mix / cross-fade is in
+            # progress.  (≤2 was too strict: when the incoming song first
+            # appears the history is [A,A,A,B], top=3, so the mix was
+            # detected only on the 2nd incoming hit — by which time it was
+            # already confirmed, skipping the pulsing display.)
+            if top_count <= 3 and not self._in_mix:
                 self._in_mix = True
                 self._log(
                     f"🎚 Mix detected — matches bouncing between "
                     f"{len(distinct)} songs. Holding current display.",
                 )
                 self._send_viz({"type": "status", "text": "Mixing…"})
+                # Re-send the current track with the tentative (pulsing)
+                # flag so the display visually signals "mix in progress"
+                # without changing which song is shown.
+                if self._current_track_path is not None:
+                    try:
+                        track = extract_track(self._current_track_path)
+                    except Exception:
+                        track = Track(self._current_track_path, "", "", "", None)
+                    self._send_viz({
+                        "type": "track",
+                        "title": track.title,
+                        "artist": track.artist,
+                        "album": track.album,
+                        "cover": track.cover_path,
+                        "tentative": True,
+                    })
 
-        if self._in_mix and self._current_track_path is not None:
+        if self._in_mix and self._current_track_path is not None and not fast_confirm:
             # During a mix, hold the current display.  Only exit mix mode
             # when the same NEW song wins 2 consecutive matches.
+            #
+            # A mix makes hash counts noisy (two songs' fingerprints
+            # overlap), so we raise the confidence bar for switching —
+            # a ≥0.40 hit is a much stronger signal that the incoming
+            # song has actually taken over than the default 0.30 floor.
+            MIX_MIN_CONFIDENCE = 0.40
+            if result.confidence < MIX_MIN_CONFIDENCE:
+                log.info(
+                    "Mix hold — %s conf=%.2f below mix threshold %.2f",
+                    Path(result.file_path).name, result.confidence,
+                    MIX_MIN_CONFIDENCE,
+                )
+                return
             if result.file_path == self._pending_path:
                 self._pending_hits += 1
             else:
@@ -665,6 +780,9 @@ class MatcherThread(threading.Thread):
             confirm_needed = 1
             self._pending_path = result.file_path
             self._pending_hits = 1
+            # Committing to a track exits mix mode (the tentative lock
+            # already filtered out bounce noise).
+            self._in_mix = False
         elif self._current_track_path is None:
             confirm_needed = 1
         else:
