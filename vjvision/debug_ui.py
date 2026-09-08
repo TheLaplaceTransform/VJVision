@@ -62,9 +62,11 @@ class DebugUI:
         # finally block runs (stops the visualizer child process, etc.).
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         screen_h = self.root.winfo_screenheight()
-        win_h = min(screen_h - 60, 1180)
-        self.root.geometry(f"780x{win_h}+40+20")
-        self.root.minsize(720, 600)
+        # Wide two-column panel sized to fit content without excess
+        # blank space at the bottom.
+        win_h = min(screen_h - 80, 660)
+        self.root.geometry(f"1240x{win_h}+40+20")
+        self.root.minsize(1000, 560)
 
         self.scroll = ctk.CTkScrollableFrame(
             self.root,
@@ -155,7 +157,7 @@ class DebugUI:
                 pass
 
     def _build_widgets(self) -> None:
-        pad = {"padx": 12, "pady": 6}
+        pad = {"padx": 8, "pady": 6}
 
         # === Top bar: language selector (right-aligned) =================
         top_bar = ctk.CTkFrame(self.scroll, fg_color="transparent")
@@ -171,8 +173,17 @@ class DebugUI:
         )
         self.lang_menu.pack(side="right")
 
+        # === Two-column body ============================================
+        # Left column: library + capture; right column: audio + visual.
+        col_row = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        col_row.pack(fill="both", expand=True, **pad)
+        self.left_col = ctk.CTkFrame(col_row, fg_color="transparent")
+        self.left_col.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.right_col = ctk.CTkFrame(col_row, fg_color="transparent")
+        self.right_col.pack(side="left", fill="both", expand=True, padx=(6, 0))
+
         # === Audio device ==============================================
-        self.dev_frame = ctk.CTkFrame(self.scroll)
+        self.dev_frame = ctk.CTkFrame(self.left_col)
         self.dev_frame.pack(fill="x", **pad)
         self._reg(ctk.CTkLabel(self.dev_frame, text=t("dev.title")), "dev.title").pack(
             anchor="w", padx=8, pady=(8, 0))
@@ -216,7 +227,7 @@ class DebugUI:
 
         # === Library preparation =======================================
         self._queue: list[str] = []
-        self.prep_frame = ctk.CTkFrame(self.scroll)
+        self.prep_frame = ctk.CTkFrame(self.left_col)
         self.prep_frame.pack(fill="x", **pad)
         self._reg(ctk.CTkLabel(self.prep_frame, text=t("prep.title")), "prep.title").pack(
             anchor="w", padx=8, pady=(8, 0))
@@ -284,7 +295,7 @@ class DebugUI:
         self.prep_status.pack(anchor="w", padx=8, pady=(2, 8))
 
         # === Spectrum style ============================================
-        self.style_frame = ctk.CTkFrame(self.scroll)
+        self.style_frame = ctk.CTkFrame(self.right_col)
         self.style_frame.pack(fill="x", **pad)
         self._reg(ctk.CTkLabel(self.style_frame, text=t("style.title")), "style.title").pack(
             anchor="w", padx=8, pady=(8, 0))
@@ -299,7 +310,7 @@ class DebugUI:
             self._style_rbs.append(rb)
 
         # === Rotation + beat ============================================
-        self.anim_frame = ctk.CTkFrame(self.scroll)
+        self.anim_frame = ctk.CTkFrame(self.right_col)
         self.anim_frame.pack(fill="x", **pad)
         rot_row = ctk.CTkFrame(self.anim_frame, fg_color="transparent")
         rot_row.pack(fill="x", padx=8, pady=(8, 2))
@@ -322,7 +333,7 @@ class DebugUI:
         self.beat_cb.pack(anchor="w", padx=8, pady=(0, 8))
 
         # === Display mode ==============================================
-        self.display_frame = ctk.CTkFrame(self.scroll)
+        self.display_frame = ctk.CTkFrame(self.right_col)
         self.display_frame.pack(fill="x", **pad)
         self._reg(ctk.CTkLabel(self.display_frame, text=t("display.title")), "display.title").pack(
             anchor="w", padx=8, pady=(8, 0))
@@ -417,7 +428,7 @@ class DebugUI:
         self.root.after(3000, self._poll_viz_alive)
 
         # === Capture controls ==========================================
-        self.cap_frame = ctk.CTkFrame(self.scroll)
+        self.cap_frame = ctk.CTkFrame(self.left_col)
         self.cap_frame.pack(fill="x", **pad)
         self.start_btn = self._reg(
             ctk.CTkButton(self.cap_frame, text=t("cap.start"), fg_color="green",
@@ -435,8 +446,8 @@ class DebugUI:
         self.capture_status.pack(side="left", padx=12)
 
         # === Current track ============================================
-        self.track_frame = ctk.CTkFrame(self.scroll)
-        self.track_frame.pack(fill="x", **pad)
+        self.track_frame = ctk.CTkFrame(self.left_col)
+        self.track_frame.pack(fill="both", expand=True, **pad)
         self._reg(ctk.CTkLabel(self.track_frame, text=t("track.title")), "track.title").pack(
             anchor="w", padx=8, pady=(8, 0))
         self.track_title = ctk.CTkLabel(self.track_frame, text=t("track.none"), font=("Arial", 16, "bold"))
@@ -449,11 +460,11 @@ class DebugUI:
         self.track_state.pack(anchor="w", padx=8, pady=(0, 8))
 
         # === Log ======================================================
-        self.log_frame = ctk.CTkFrame(self.scroll)
-        self.log_frame.pack(fill="x", **pad)
+        self.log_frame = ctk.CTkFrame(self.right_col)
+        self.log_frame.pack(fill="both", expand=True, **pad)
         self._reg(ctk.CTkLabel(self.log_frame, text=t("log.title")), "log.title").pack(
             anchor="w", padx=8, pady=(8, 0))
-        self.log_text = ctk.CTkTextbox(self.log_frame, height=110, state="disabled")
+        self.log_text = ctk.CTkTextbox(self.log_frame, height=120, state="disabled")
         self.log_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
     # -- language ---------------------------------------------------------

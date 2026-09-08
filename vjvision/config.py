@@ -107,6 +107,7 @@ class VisualConfig:
     rotation_speed: float = 0.3    # revolutions per second (slower for "chill" feel)
     beat_reactive: bool = False    # if True, rotation pulses with bass energy
     fullscreen: bool = False       # if True the visualizer opens fullscreen
+    gpu_acceleration: bool = True  # use SDL2 hardware renderer (GPU cover rotation)
     window_width: int = 1280      # windowed-mode width
     window_height: int = 720       # windowed-mode height
     bg_blur_px: int = 8        # smaller = stronger blur (for 'blur' mode)

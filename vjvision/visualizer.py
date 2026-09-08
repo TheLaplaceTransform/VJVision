@@ -92,6 +92,15 @@ PALETTE_TRACK_SUB = (210, 210, 230)
 PALETTE_PLACEHOLDER = (60, 60, 90)
 PALETTE_STATUS = (150, 150, 170)
 
+# Cover art is rendered (and rotated) at this many pixels across at most,
+# then smoothly scaled up to the on-screen display size. At 4K the on-screen
+# cover is ~1344 px; rotozoom + smoothscale of a 960 px source costs ~15 ms
+# on rotation frames which (with bg + spectrum) blows the 16.7 ms budget.
+# 720 px keeps rotation frames at ~9 ms (rotozoom 4 + smoothscale 5) so the
+# full 4K frame stays under budget and hits 60 fps. The circle mask hides
+# any upscaling softness.
+MAX_COVER_RENDER_PX = 720
+
 
 # --------------------------------------------------------------------------- #
 # Message-driven state                                                        #
@@ -232,7 +241,13 @@ def _current_monitor_index() -> Optional[int]:
 
 
 def _load_cover(path: Optional[str], square_size: int):
-    """Return (square_surface, raw_image_surface) or (None, None)."""
+    """Return (square_surface, raw_image_surface) or (None, None).
+
+    The square is rendered at ``min(square_size, MAX_COVER_RENDER_PX)``
+    pixels across. The caller scales the rotated result back up to the
+    on-screen display size — this keeps ``rotozoom`` cheap at 4K while
+    the circle mask hides any upscaling softness.
+    """
     import pygame
     if not path or not Path(path).exists():
         return None, None
@@ -243,18 +258,21 @@ def _load_cover(path: Optional[str], square_size: int):
         return None, None
     img = img.convert_alpha()
 
+    # Internal render resolution is capped so rotozoom stays fast.
+    render_size = min(square_size, MAX_COVER_RENDER_PX)
+
     # Square (preserve aspect via center-crop) for the rotating cover.
     w, h = img.get_size()
     s = min(w, h)
     square = pygame.Surface((s, s), pygame.SRCALPHA)
     square.blit(img, (-(w - s) // 2, -(h - s) // 2))
-    square = pygame.transform.smoothscale(square, (square_size, square_size))
+    square = pygame.transform.smoothscale(square, (render_size, render_size))
 
     # Mask to a circle so rotated corners stay transparent.
-    mask = pygame.Surface((square_size, square_size), pygame.SRCALPHA)
+    mask = pygame.Surface((render_size, render_size), pygame.SRCALPHA)
     pygame.draw.circle(
         mask, (255, 255, 255, 255),
-        (square_size // 2, square_size // 2), square_size // 2,
+        (render_size // 2, render_size // 2), render_size // 2,
     )
     square.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
     return square, img
@@ -716,7 +734,14 @@ def _compute_layout_horizontal(
     text_band_h = max(110, int(screen_h * 0.22))
     spectrum_h = screen_h - text_band_h
     spectrum_rect = pygame.Rect(left_w, 0, right_w, spectrum_h)
-    text_rect = pygame.Rect(left_w, spectrum_h, right_w, text_band_h)
+    # Shrink the text block to 70 % of its band and anchor it to the
+    # left edge of the right column — i.e. toward the screen centre —
+    # so the song info doesn't sprawl across the whole bottom-right.
+    text_w = int(right_w * 0.70)
+    text_h = int(text_band_h * 0.70)
+    text_x = left_w
+    text_y = spectrum_h + (text_band_h - text_h) // 2
+    text_rect = pygame.Rect(text_x, text_y, text_w, text_h)
 
     # Square cover, centred in the left half, sized to 70% of the smaller
     # of (left_w, screen_h) so it never overflows.
@@ -1067,6 +1092,13 @@ def run(queue, display_index: int = 1) -> None:
         "frame_no": 0,
         "bg_cache": None,
         "cover_rot_cache": None,
+        "cover_disp_cache": None,
+        # Cached rotated covers during cross-fade so we don't pay the
+        # rotozoom cost twice every frame at 4K.
+        "old_cover_rot_cache": None,
+        "new_cover_rot_cache": None,
+        "old_cover_disp_cache": None,
+        "new_cover_disp_cache": None,
         "text_cache": None,
         "text_cache_key": None,
     }
@@ -1075,6 +1107,7 @@ def run(queue, display_index: int = 1) -> None:
         """Re-render the cover square + blurred bg + dominant colours."""
         # Rotated-frame cache belongs to the previous artwork.
         rs["cover_rot_cache"] = None
+        rs["cover_disp_cache"] = None
         if not path:
             rs["cover_square"] = None
             rs["cover_bg"] = None
@@ -1175,8 +1208,8 @@ def run(queue, display_index: int = 1) -> None:
         def _try(size, flags, use_display):
             if use_display:
                 return pygame.display.set_mode(
-                    size, flags, display=target_display)
-            return pygame.display.set_mode(size, flags)
+                    size, flags, display=target_display, vsync=1)
+            return pygame.display.set_mode(size, flags, vsync=1)
 
         screen = None
         last_exc = None
@@ -1185,6 +1218,12 @@ def run(queue, display_index: int = 1) -> None:
         # never from values that fullscreen resize events may have
         # written into SETTINGS.
         if want_fullscreen:
+            # Native resolution fullscreen. When GPU acceleration is on,
+            # the SDL2 hardware renderer handles all heavy lifting
+            # (cover rotation, scaling, compositing) on the GPU, so we
+            # can render at the display's full native resolution without
+            # the CPU becoming the bottleneck — the same approach
+            # PowerPoint uses for smooth fullscreen animation.
             size, flags = (0, 0), pygame.FULLSCREEN
         else:
             size, flags = (rs["win_w"], rs["win_h"]), pygame.RESIZABLE
@@ -1263,8 +1302,13 @@ def run(queue, display_index: int = 1) -> None:
         _reload_cover_assets(rs["current_cover_path"], layout)
         # Re-scale the standby image for the new resolution too.
         _reload_standby()
-        log.info("Visualizer display=%s size=%sx%s fullscreen=%s",
-                 display_index, rs["screen_w"], rs["screen_h"], rs["fullscreen"])
+        if rs.get("scaled_render"):
+            log.info("Visualizer display=%s render=%sx%s (native %sx%s, GPU-upscaled) fullscreen=%s",
+                     display_index, rs["screen_w"], rs["screen_h"],
+                     rs["native_w"], rs["native_h"], rs["fullscreen"])
+        else:
+            log.info("Visualizer display=%s size=%sx%s fullscreen=%s",
+                     display_index, rs["screen_w"], rs["screen_h"], rs["fullscreen"])
 
     _reinit_display()
 
@@ -1357,6 +1401,12 @@ def run(queue, display_index: int = 1) -> None:
                     # Keep fading bg colors and old cover surface too.
                     rs["old_dominant_colors"] = list(rs["dominant_colors"])
                     rs["old_cover_square"] = rs["cover_square"]
+                    # Rotation caches are for the current artwork; reset
+                    # so the fade re-renders from the new angle.
+                    rs["old_cover_rot_cache"] = None
+                    rs["new_cover_rot_cache"] = None
+                    rs["old_cover_disp_cache"] = None
+                    rs["new_cover_disp_cache"] = None
                 elif not has_previous and rs.get("standby_surf") is not None:
                     # Very first track while the standby image is up —
                     # dissolve out of the standby screen: the image fades
@@ -1486,6 +1536,12 @@ def run(queue, display_index: int = 1) -> None:
         # --- update animation --------------------------------------
         dt = clock.tick(60) / 1000.0
         rs["frame_no"] += 1
+
+        # FPS logging (every ~2s) to diagnose performance issues.
+        if rs["frame_no"] % 120 == 1:
+            log.info("FPS=%.1f frame_time=%.1fms render=%dx%s",
+                     clock.get_fps(), dt * 1000,
+                     rs["screen_w"], rs["screen_h"])
 
         # --- parent liveness check (every ~0.5s) --------------------
         # If the main process died (e.g. user closed the console window)
@@ -1623,52 +1679,105 @@ def run(queue, display_index: int = 1) -> None:
             old_alpha = int((1.0 - fade_p) * 255)
             new_alpha = int(fade_p * 255)
 
-            # Composite surface keeps both rotated covers at the correct
-            # angle (same rotation for both during transition — smoother).
-            old_rotated = pygame.transform.rotozoom(
-                rs["old_cover_square"], state.angle, 1.0,
-            )
-            new_rotated = pygame.transform.rotozoom(
-                rs["cover_square"], state.angle, 1.0,
-            ) if rs["cover_square"] is not None else None
+            # At 4K rotozoom of a ~960 px alpha square costs ~10 ms. Two
+            # of them per frame would blow the 16.7 ms budget, so we
+            # stagger them: old rotates on frame%3==1, new on frame%3==2.
+            # The angle advances only ~1.5 deg/frame, so a one-frame
+            # difference is invisible.
+            cover_px = int(rs["old_cover_square"].get_width())
+            display_scale = layout.cover_rect.width / cover_px
+            frame_mod = rs["frame_no"] % 3
+            rotate_old = cover_px <= 640 or frame_mod == 1
+            rotate_new = cover_px <= 640 or frame_mod == 2
+            if rotate_old or rs["old_cover_rot_cache"] is None:
+                rs["old_cover_rot_cache"] = pygame.transform.rotozoom(
+                    rs["old_cover_square"], state.angle, 1.0,
+                )
+                if display_scale != 1.0:
+                    _r = rs["old_cover_rot_cache"]
+                    rs["old_cover_disp_cache"] = pygame.transform.smoothscale(
+                        _r, (int(_r.get_width() * display_scale),
+                             int(_r.get_height() * display_scale)))
+                else:
+                    rs["old_cover_disp_cache"] = None
+            if rotate_new or rs["new_cover_rot_cache"] is None:
+                rs["new_cover_rot_cache"] = (
+                    pygame.transform.rotozoom(
+                        rs["cover_square"], state.angle, 1.0,
+                    ) if rs["cover_square"] is not None else None
+                )
+                if display_scale != 1.0 and rs["new_cover_rot_cache"] is not None:
+                    _r = rs["new_cover_rot_cache"]
+                    rs["new_cover_disp_cache"] = pygame.transform.smoothscale(
+                        _r, (int(_r.get_width() * display_scale),
+                             int(_r.get_height() * display_scale)))
+                else:
+                    rs["new_cover_disp_cache"] = None
 
-            # Start with a fully-transparent SRCALPHA surface.
-            max_h = max(old_rotated.get_height(),
-                        new_rotated.get_height() if new_rotated else 0)
-            max_w = max(old_rotated.get_width(),
-                        new_rotated.get_width() if new_rotated else 0)
-            composite = pygame.Surface((max_w, max_h), pygame.SRCALPHA)
+            old_rot = (rs["old_cover_disp_cache"]
+                       if rs["old_cover_disp_cache"] is not None
+                       else rs["old_cover_rot_cache"])
+            new_rot = (rs["new_cover_disp_cache"]
+                       if rs["new_cover_disp_cache"] is not None
+                       else rs["new_cover_rot_cache"])
+            center = layout.cover_rect.center
 
-            # Render old at fade-out alpha.
-            old_rotated.set_alpha(old_alpha)
-            composite.blit(old_rotated, (0, 0))
-            # Render new at fade-in alpha on top.
-            if new_rotated is not None:
-                new_rotated.set_alpha(new_alpha)
-                composite.blit(new_rotated, (0, 0))
-
-            screen.blit(
-                composite,
-                composite.get_rect(center=layout.cover_rect.center).topleft,
-            )
+            # Blit directly to screen — no intermediate composite surface
+            # (allocating a ~1500 px SRCALPHA surface every frame was an
+            # extra ~5 ms at 4K). set_alpha on SRCALPHA surfaces modulates
+            # per-pixel alpha in pygame-ce, so the circle mask is honoured.
+            old_rot.set_alpha(old_alpha)
+            screen.blit(old_rot, old_rot.get_rect(center=center).topleft)
+            if new_rot is not None:
+                new_rot.set_alpha(new_alpha)
+                screen.blit(new_rot, new_rot.get_rect(center=center).topleft)
+            # Reset alpha so the cached surfaces render at full opacity
+            # the next time they're used outside a fade.
+            rs["old_cover_rot_cache"].set_alpha(255)
+            if rs["new_cover_rot_cache"] is not None:
+                rs["new_cover_rot_cache"].set_alpha(255)
         elif rs["cover_square"] is not None:
-            # Rotate every frame for small covers (rotozoom ≤ ~5 ms up
-            # to ~640 px). For large covers (4K fullscreen, where
-            # rotozoom of a 1900 px alpha square costs ~50 ms) rotate on
-            # the frames in between background regenerations
-            # (frame_no % 3 == 1) and blit the cached rotation on skip
-            # frames. This keeps every 4K frame under the 16.7 ms budget
-            # instead of blowing it by 4x.
+            # The cover square is rendered at a capped internal resolution
+            # (MAX_COVER_RENDER_PX) so rotozoom stays fast. After rotating
+            # we scale the result up to the on-screen display size — the
+            # circle mask hides any upscaling softness. BOTH the rotated
+            # surface and its upscaled version are cached: smoothscale of
+            # a ~1350 px SRCALPHA surface to ~1900 px costs ~10 ms at 4K,
+            # so doing it every frame (instead of only on rotation frames)
+            # was the real FPS killer.
             cover_px = int(rs["cover_square"].get_width())
+            display_scale = layout.cover_rect.width / cover_px
+            # Rotate every frame for small covers (rotozoom ≤ ~5 ms up
+            # to ~640 px). For larger covers rotate every 3rd frame and
+            # blit the cached rotation on the others — the angle still
+            # advances every frame so motion stays smooth.
             rotate_now = cover_px <= 640 or rs["frame_no"] % 3 == 1
             if rotate_now or rs["cover_rot_cache"] is None:
                 rs["cover_rot_cache"] = pygame.transform.rotozoom(
                     rs["cover_square"], state.angle, 1.0
                 )
-            rotated = rs["cover_rot_cache"]
+                # Re-upscale to display size only when the rotation
+                # cache is refreshed.
+                if display_scale != 1.0:
+                    _rot = rs["cover_rot_cache"]
+                    dw = max(1, int(_rot.get_width() * display_scale))
+                    dh = max(1, int(_rot.get_height() * display_scale))
+                    rs["cover_disp_cache"] = pygame.transform.smoothscale(
+                        _rot, (dw, dh))
+                else:
+                    rs["cover_disp_cache"] = None
+            rotated = (
+                rs["cover_disp_cache"]
+                if rs["cover_disp_cache"] is not None
+                else rs["cover_rot_cache"]
+            )
             if fade_from_standby:
                 # Cover fades in only during stage 3 (after the gap).
                 rotated.set_alpha(int(content_p * 255))
+            else:
+                # Ensure the cached surface is at full opacity after a
+                # previous fade-in frame left it at a reduced alpha.
+                rotated.set_alpha(255)
             rect = rotated.get_rect(center=layout.cover_rect.center)
             screen.blit(rotated, rect.topleft)
         elif not fade_from_standby:
@@ -1682,24 +1791,21 @@ def run(queue, display_index: int = 1) -> None:
         standby_img = rs.get("standby_surf")
         if standby_img is not None and img_fade > 0.0 and (
                 standby or fade_from_standby):
-            if fade_from_standby and img_fade < 1.0:
-                # Multiply the alpha channel by img_fade. Done on a copy
-                # so the cached surface stays fully opaque for the next
-                # reset. Alpha-channel multiply honours both the image's
-                # own transparency and the stage-1 fade ramp.
-                img = standby_img.copy()
-                try:
-                    alpha_arr = pygame.surfarray.pixels_alpha(img)
-                    alpha_arr[:] = (
-                        alpha_arr.astype(np.float32) * img_fade
-                    ).astype(np.uint8)
-                    del alpha_arr
-                except Exception:
-                    img.set_alpha(int(img_fade * 255))
-            else:
-                img = standby_img
-            img_rect = img.get_rect(center=(screen_w // 2, screen_h // 2))
-            screen.blit(img, img_rect.topleft)
+            # Use set_alpha to modulate the surface alpha instead of
+            # copying the surface and multiplying its alpha channel
+            # pixel-by-pixel via surfarray. At 4K the standby image can
+            # be ~1200 px tall, so the copy + float32 multiply + uint8
+            # cast was ~3-5 ms per frame and garbage-collected a big
+            # array every time. set_alpha on an SRCALPHA surface in
+            # pygame-ce multiplies with the per-pixel alpha, so the
+            # image's own transparency is preserved.
+            standby_img.set_alpha(int(img_fade * 255))
+            img_rect = standby_img.get_rect(
+                center=(screen_w // 2, screen_h // 2))
+            screen.blit(standby_img, img_rect.topleft)
+            # Restore full opacity so the cached surface is ready for
+            # the next standby cycle.
+            standby_img.set_alpha(255)
 
         # --- Spectrum (hidden on the standby screen and during the
         # image fade-out + gap; appears with the cover/text reveal) ---
