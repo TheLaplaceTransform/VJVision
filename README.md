@@ -49,25 +49,36 @@ Add library → Analyze fingerprints → Select audio device → Start capture �
 
 1. **曲库准备 / Library Prep**
    - 点击「+ 添加文件夹 / + Add Folder」选择音乐目录，或「+ 添加文件 / + Add Files」逐个添加
+     Click 「+ Add Folder」to choose a music directory, or 「+ Add Files」to add files one by one
    - 支持格式 Supported formats: `.flac` `.wav` `.mp3` `.aiff` `.aif` `.ogg`
    - 点击「分析队列 / Analyze Queue」开始生成音频指纹（首次分析较慢，之后增量）
+     Click 「Analyze Queue」to generate audio fingerprints (first run is slow; subsequent runs are incremental)
    - 分析完成后状态显示「曲库：N 首 / Library: N tracks prepared」
+     When done, the status shows 「Library: N tracks prepared」
 
 2. **音频设备 / Audio Device**
    - 在「音频设备 / Audio Device」下拉框选择监听 DJ 输出的设备（如声卡输入或虚拟音频线）
+     From the 「Audio Device」dropdown, select the device monitoring the DJ output (e.g. soundcard input or virtual audio cable)
    - 观察「输入电平 / Input Level」表，确认有信号输入
+     Watch the 「Input Level」meter to confirm a signal is present
 
 3. **可视化 / Visualizer**
    - 「可视化显示 / Visualizer Display」选择副屏（默认第 2 块显示器）
+     In 「Visualizer Display」, select the secondary screen (default: 2nd display)
    - 可设频谱样式、旋转速度、是否随节拍旋转
+     Adjust spectrum style, rotation speed, and beat-reactive rotation
    - 可上传待机 LOGO 图片（识别到第一首歌前显示）
+     Upload a standby LOGO image (shown before the first track is recognised)
 
 4. **开始 / Start**
    - 点击「开始采集 / Start Capture」，副屏即出现可视化窗口
+     Click 「Start Capture」— the visualizer window appears on the secondary screen
    - 播放音乐，几秒后自动识别并显示歌曲封面
+     Play music; after a few seconds the track is auto-recognised and its cover is shown
 
 5. **语言切换 / Language**
    - 右上角下拉框选择「中文」或「English」，即时生效
+     Use the top-right dropdown to choose 「中文」 or 「English」; changes apply immediately
 
 ## 从源码运行 / Run from Source
 
@@ -96,11 +107,11 @@ Or use the one-click release script (build + commit + push + create GitHub Relea
 
 | 路径 Path | 说明 Description | 便携 Portable |
 |------|------|--------|
-| `data/fingerprints.db` | 音频指纹库（SQLite） | ✅ |
-| `data/song_paths.sqlite` | 歌曲 ID → 文件路径索引 | ✅ |
-| `data/covers/` | 专辑封面缓存 | ✅ |
-| `data/vjvision.log` | 运行日志 | ✅ |
-| `%APPDATA%/VJVision/prefs.json` | 音频设备、显示器、语言等本机偏好 | ❌ 每台机器独立 |
+| `data/fingerprints.db` | 音频指纹库（SQLite）/ Audio fingerprint DB (SQLite) | ✅ |
+| `data/song_paths.sqlite` | 歌曲 ID → 文件路径索引 / Song ID → file path index | ✅ |
+| `data/covers/` | 专辑封面缓存 / Album cover cache | ✅ |
+| `data/vjvision.log` | 运行日志 / Runtime log | ✅ |
+| `%APPDATA%/VJVision/prefs.json` | 音频设备、显示器、语言等本机偏好 / Per-machine prefs (device, display, language) | ❌ 每台机器独立 / per-machine |
 
 > 在 A 电脑分析完曲库后，把 `VJVision.exe` + `data/` 一起拷到 U 盘，插到 B 电脑即可直接使用，无需重新分析。
 > After analysing the library on PC A, copy `VJVision.exe` + `data/` to a USB stick and run on PC B — no re-analysis needed.
@@ -112,11 +123,11 @@ Tunable in `vjvision/config.py` → `CaptureConfig`:
 
 | 参数 Param | 默认 Default | 说明 Description |
 |------|--------|------|
-| `match_seconds` | 12 | 每次识别采样时长（秒）。过短会降低置信度 |
-| `match_interval` | 4 | 识别间隔（秒）。混音期间会自动减半 |
-| `match_confirmations` | 2 | 连续命中几次才切歌，防止误判 |
-| 首歌确认阈值 First-track threshold | 0.25 | 第一首歌需达到此置信度才确认 |
-| 切歌确认阈值 Switch threshold | 0.30 | 后续歌曲需达到此置信度才切换 |
+| `match_seconds` | 12 | 每次识别采样时长（秒）。过短会降低置信度 / Sampling duration per recognition (s). Too short lowers confidence |
+| `match_interval` | 4 | 识别间隔（秒）。混音期间会自动减半 / Recognition interval (s). Auto-halved during mixes |
+| `match_confirmations` | 2 | 连续命中几次才切歌，防止误判 / Consecutive hits required to switch (avoids false positives) |
+| 首歌确认阈值 First-track threshold | 0.25 | 第一首歌需达到此置信度才确认 / Confidence needed to confirm the first track |
+| 切歌确认阈值 Switch threshold | 0.30 | 后续歌曲需达到此置信度才切换 / Confidence needed to switch to a later track |
 
 ## 常见问题 / FAQ
 
@@ -144,9 +155,9 @@ Tunable in `vjvision/config.py` → `CaptureConfig`:
 
 ```
 main.py
-├── VisualizerManager  →  pygame 子进程（副屏可视化）
-├── MatcherThread      →  音频采集 + Dejavu 识别 + 元数据
-└── DebugUI            →  CustomTkinter 控制面板（主线程）
+├── VisualizerManager  →  pygame 子进程（副屏可视化）/ pygame subprocess (secondary display)
+├── MatcherThread      →  音频采集 + Dejavu 识别 + 元数据 / audio capture + Dejavu recognition + metadata
+└── DebugUI            →  CustomTkinter 控制面板（主线程）/ CustomTkinter control panel (main thread)
 ```
 
 - 进程间通信 IPC：`multiprocessing.Queue`
