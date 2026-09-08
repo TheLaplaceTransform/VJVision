@@ -69,8 +69,14 @@ Write-Host "[1/4] 清理旧构建..." -ForegroundColor Cyan
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 
 Write-Host "[2/4] PyInstaller 构建中 (~1 分钟)..." -ForegroundColor Cyan
+# PyInstaller writes progress to stderr, which PowerShell treats as errors
+# under strict mode.  Temporarily relax error handling during the build.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 python -m PyInstaller VJVision.spec --noconfirm --clean
-if ($LASTEXITCODE -ne 0) {
+$buildExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+if ($buildExit -ne 0) {
     Write-Host "[ERROR] 构建失败" -ForegroundColor Red
     exit 1
 }
