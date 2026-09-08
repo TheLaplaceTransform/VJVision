@@ -20,6 +20,7 @@ from typing import Optional
 from .audio_capture import AudioCapture
 from .config import SETTINGS
 from .fingerprint import FingerprintDB
+from .i18n import t
 from .metadata import Track, extract_track
 
 log = logging.getLogger(__name__)
@@ -259,8 +260,8 @@ class MatcherThread(threading.Thread):
                 self._capture.start()
             self._capture.spectrum_enabled = True
             self._capture_running = True
-            self._send_ui({"type": "capture_status", "text": "采集：运行中"})
-            self._send_viz({"type": "status", "text": "Capture started"})
+            self._send_ui({"type": "capture_status", "text": t("cap.running")})
+            self._send_viz({"type": "status", "text": t("viz.capture_started")})
             self._log("Capture started.")
         except Exception as exc:
             self._log(f"Capture start failed: {exc}", "error")
@@ -275,7 +276,7 @@ class MatcherThread(threading.Thread):
             except Exception:
                 pass
         self._send_ui({"type": "capture_status",
-                       "text": "采集：已停止（监听输入中）"})
+                       "text": t("cap.monitoring")})
 
     def _close_capture(self) -> None:
         """Fully close the InputStream (shutdown only)."""
@@ -362,7 +363,7 @@ class MatcherThread(threading.Thread):
         # Guard against double-clicking "分析队列" which would spawn two
         # concurrent indexing pools (and two sets of black console windows).
         if getattr(self, "_preparing", False):
-            self._log("已有索引任务在运行中，忽略重复的分析请求。", "warning")
+            self._log(t("prep.already_running"), "warning")
             return
         self._preparing = True
         self._ensure_fp()
@@ -427,7 +428,7 @@ class MatcherThread(threading.Thread):
         except Exception as exc:
             self._log(f"Snapshot failed: {exc}", "error")
             return
-        self._send_viz({"type": "status", "text": "Matching..."})
+        self._send_viz({"type": "status", "text": t("viz.matching")})
         try:
             result = self._fp.match_from_array(
                 snapshot, input_sr=self._capture.sr,
@@ -444,7 +445,7 @@ class MatcherThread(threading.Thread):
             self._pending_path = None
             self._pending_hits = 0
             log.info("No match — may need manual track check")
-            self._send_viz({"type": "status", "text": "No match"})
+            self._send_viz({"type": "status", "text": t("viz.no_match")})
             return
 
         # --- Two-tier confidence gate -----------------------------------
@@ -483,7 +484,7 @@ class MatcherThread(threading.Thread):
                 TENTATIVE_CONFIDENCE,
             )
             if self._current_track_path is None and self._tentative_path is None:
-                self._send_viz({"type": "status", "text": "Listening…"})
+                self._send_viz({"type": "status", "text": t("viz.listening")})
             return
 
         if result.confidence < accept_threshold:
@@ -495,7 +496,7 @@ class MatcherThread(threading.Thread):
             # otherwise lock the display onto the wrong song.  Wait
             # silently for a ≥0.25 hit to confirm the first track.
             if self._current_track_path is None:
-                self._send_viz({"type": "status", "text": "Listening…"})
+                self._send_viz({"type": "status", "text": t("viz.listening")})
                 log.info(
                     "Ignoring tentative hit for first track: %s conf=%.2f",
                     Path(result.file_path).name, result.confidence,
@@ -516,7 +517,7 @@ class MatcherThread(threading.Thread):
                     "🎚 Mix detected (tentative zone) — different song "
                     "signal. Pulsing current track."
                 )
-                self._send_viz({"type": "status", "text": "Mixing…"})
+                self._send_viz({"type": "status", "text": t("viz.mixing")})
                 try:
                     track = extract_track(self._current_track_path)
                 except Exception:
@@ -742,7 +743,7 @@ class MatcherThread(threading.Thread):
                     f"🎚 Mix detected — matches bouncing between "
                     f"{len(distinct)} songs. Holding current display.",
                 )
-                self._send_viz({"type": "status", "text": "Mixing…"})
+                self._send_viz({"type": "status", "text": t("viz.mixing")})
                 # Re-send the current track with the tentative (pulsing)
                 # flag so the display visually signals "mix in progress"
                 # without changing which song is shown.
@@ -829,7 +830,7 @@ class MatcherThread(threading.Thread):
             )
             self._send_viz({
                 "type": "status",
-                "text": f"Pending ({self._pending_hits}/{confirm_needed})",
+                "text": t("viz.pending", cur=self._pending_hits, need=confirm_needed),
             })
             return
 
@@ -998,7 +999,7 @@ class MatcherThread(threading.Thread):
                 if not self.viz_mgr.alive:
                     self._send_ui({
                         "type": "viz_status",
-                        "text": "⚠ 可视化进程已退出 — 请点击『🔄 重启可视化窗口』按钮",
+                        "text": t("viz.exited"),
                     })
 
             # --- Recognition with jittered interval ---

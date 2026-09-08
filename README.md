@@ -1,57 +1,75 @@
 # VJVision
 
 > 实时音频识别 + 音频响应可视化，专为 DJ 现场设计。
+> Real-time audio recognition + audio-reactive visualizer, designed for DJ live sets.
 
 VJVision 监听 DJ 台的输出音频，自动识别当前播放的曲目，并在第二块屏幕（投影/LED 墙）上展示随音乐律动的频谱与专辑封面动画。
+VJVision listens to the DJ booth output, auto-recognises the currently playing track, and renders a music-reactive spectrum + album cover animation on a second display (projector / LED wall).
 
-## 功能特性
+---
+
+## 功能特性 / Features
 
 - **自动曲目识别**：基于 Dejavu 音频指纹算法，实时识别正在播放的歌曲（支持 12 秒采样窗口）
 - **音频响应可视化**：pygame 渲染的频谱柱、波形、镜像三种样式，封面随节拍旋转
 - **混音过渡脉动**：检测到 DJ 切歌/混音时，视觉进入脉动过渡状态，平滑切换到下一首歌
+- **中英双语界面**：右上角可随时切换中文/英文，PEAK 指示灯始终显示 PEAK
 - **多显示器支持**：控制界面在主屏，可视化窗口投放到副屏
 - **便携部署**：打包为单个 exe，带上 `data/` 文件夹即可在任意机器上运行（含已分析的指纹库）
 
-## 系统要求
+- **Automatic track recognition** — Dejavu audio fingerprinting, real-time (12 s sampling window)
+- **Audio-reactive visualizer** — pygame bar / wave / mirror spectrum styles, cover rotates with the beat
+- **Mix-transition pulse** — detects DJ cross-fades and pulses the display for a smooth switch
+- **Bilingual UI (中文 / English)** — switch from the top-right corner; PEAK indicator always shows "PEAK"
+- **Multi-display support** — control panel on primary, visualizer on secondary
+- **Portable deployment** — single exe plus a `data/` folder runs anywhere (fingerprint DB included)
 
-| 项目 | 要求 |
+## 系统要求 / Requirements
+
+| 项目 Item | 要求 Requirement |
 |------|------|
-| 操作系统 | Windows 10 / 11 |
-| Python（开发用） | 3.13+ |
-| 音频输入 | 支持 WASAPI / DirectSound / MME 的声卡或虚拟音频线 |
-| 显示器 | 至少 1 块；推荐 2 块（控制 + 投影） |
+| 操作系统 OS | Windows 10 / 11 |
+| Python（开发 dev） | 3.13+ |
+| 音频输入 Audio input | 支持 WASAPI / DirectSound / MME 的声卡或虚拟音频线 |
+| 显示器 Displays | 至少 1 块；推荐 2 块（控制 + 投影） |
 
-## 快速开始（exe 用户）
+## 快速开始 / Quick Start（exe 用户 / for exe users）
 
 1. 从 [Releases](https://github.com/ichiryu0021/VJVision/releases) 下载最新 `VJVision.exe`
+   Download the latest `VJVision.exe` from [Releases](https://github.com/ichiryu0021/VJVision/releases)
 2. 双击运行，首次启动会在 exe 同级目录生成 `data/` 文件夹
+   Double-click to run; first launch creates a `data/` folder next to the exe
 
-### 使用流程
+### 使用流程 / Workflow
 
 ```
 添加曲库 → 分析指纹 → 选择音频设备 → 开始捕获 → 看副屏可视化
+Add library → Analyze fingerprints → Select audio device → Start capture → Watch the visualizer
 ```
 
-1. **曲库准备**
-   - 点击「+ 添加文件夹」选择音乐目录，或「+ 添加文件」逐个添加
-   - 支持格式：`.flac` `.wav` `.mp3` `.aiff` `.aif` `.ogg`
-   - 点击「分析队列」开始生成音频指纹（首次分析较慢，之后增量）
-   - 分析完成后状态显示「曲库：N 首歌」
+1. **曲库准备 / Library Prep**
+   - 点击「+ 添加文件夹 / + Add Folder」选择音乐目录，或「+ 添加文件 / + Add Files」逐个添加
+   - 支持格式 Supported formats: `.flac` `.wav` `.mp3` `.aiff` `.aif` `.ogg`
+   - 点击「分析队列 / Analyze Queue」开始生成音频指纹（首次分析较慢，之后增量）
+   - 分析完成后状态显示「曲库：N 首 / Library: N tracks prepared」
 
-2. **音频设备**
-   - 在「音频设备」下拉框选择监听 DJ 输出的设备（如声卡输入或虚拟音频线）
-   - 观察「输入电平」表，确认有信号输入
+2. **音频设备 / Audio Device**
+   - 在「音频设备 / Audio Device」下拉框选择监听 DJ 输出的设备（如声卡输入或虚拟音频线）
+   - 观察「输入电平 / Input Level」表，确认有信号输入
 
-3. **可视化**
-   - 「可视化显示」选择副屏（默认第 2 块显示器）
-   - 可设频谱样式（柱/波形/镜像）、旋转速度、是否随节拍旋转
+3. **可视化 / Visualizer**
+   - 「可视化显示 / Visualizer Display」选择副屏（默认第 2 块显示器）
+   - 可设频谱样式、旋转速度、是否随节拍旋转
    - 可上传待机 LOGO 图片（识别到第一首歌前显示）
 
-4. **开始**
-   - 点击「开始捕获」，副屏即出现可视化窗口
+4. **开始 / Start**
+   - 点击「开始采集 / Start Capture」，副屏即出现可视化窗口
    - 播放音乐，几秒后自动识别并显示歌曲封面
 
-## 从源码运行
+5. **语言切换 / Language**
+   - 右上角下拉框选择「中文」或「English」，即时生效
+
+## 从源码运行 / Run from Source
 
 ```bash
 git clone https://github.com/ichiryu0021/VJVision.git
@@ -60,61 +78,69 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## 打包 exe
+## 打包 exe / Build exe
 
 ```bash
 python -m PyInstaller VJVision.spec --noconfirm --clean
-# 产物：dist/VJVision.exe
+# 产物 Output: dist/VJVision.exe
 ```
 
 或使用一键发布脚本（构建 + 提交 + 推送 + 创建 GitHub Release）：
+Or use the one-click release script (build + commit + push + create GitHub Release):
 
 ```powershell
-.\release.ps1 -Version 1.1.4 -Notes "修复 xxx"
+.\release.ps1 -Version 1.1.4 -Notes "bilingual UI"
 ```
 
-## 数据目录说明
+## 数据目录说明 / Data Directories
 
-| 路径 | 说明 | 便携性 |
+| 路径 Path | 说明 Description | 便携 Portable |
 |------|------|--------|
-| `data/fingerprints.db` | 音频指纹库（SQLite） | ✅ 随 exe 迁移 |
-| `data/song_paths.sqlite` | 歌曲 ID → 文件路径索引 | ✅ 随 exe 迁移 |
-| `data/covers/` | 专辑封面缓存 | ✅ 随 exe 迁移 |
-| `data/vjvision.log` | 运行日志 | ✅ 随 exe 迁移 |
-| `%APPDATA%/VJVision/prefs.json` | 音频设备、显示器等本机偏好 | ❌ 每台机器独立 |
+| `data/fingerprints.db` | 音频指纹库（SQLite） | ✅ |
+| `data/song_paths.sqlite` | 歌曲 ID → 文件路径索引 | ✅ |
+| `data/covers/` | 专辑封面缓存 | ✅ |
+| `data/vjvision.log` | 运行日志 | ✅ |
+| `%APPDATA%/VJVision/prefs.json` | 音频设备、显示器、语言等本机偏好 | ❌ 每台机器独立 |
 
 > 在 A 电脑分析完曲库后，把 `VJVision.exe` + `data/` 一起拷到 U 盘，插到 B 电脑即可直接使用，无需重新分析。
+> After analysing the library on PC A, copy `VJVision.exe` + `data/` to a USB stick and run on PC B — no re-analysis needed.
 
-## 识别参数说明
+## 识别参数 / Recognition Tunables
 
 在 `vjvision/config.py` 的 `CaptureConfig` 中可调整：
+Tunable in `vjvision/config.py` → `CaptureConfig`:
 
-| 参数 | 默认值 | 说明 |
+| 参数 Param | 默认 Default | 说明 Description |
 |------|--------|------|
 | `match_seconds` | 12 | 每次识别采样时长（秒）。过短会降低置信度 |
 | `match_interval` | 4 | 识别间隔（秒）。混音期间会自动减半 |
 | `match_confirmations` | 2 | 连续命中几次才切歌，防止误判 |
-| 首歌确认阈值 | 0.25 | 第一首歌需达到此置信度才确认 |
-| 切歌确认阈值 | 0.30 | 后续歌曲需达到此置信度才切换 |
+| 首歌确认阈值 First-track threshold | 0.25 | 第一首歌需达到此置信度才确认 |
+| 切歌确认阈值 Switch threshold | 0.30 | 后续歌曲需达到此置信度才切换 |
 
-## 常见问题
+## 常见问题 / FAQ
 
-**Q：识别不到歌曲？**
-- 检查输入电平表是否有信号
-- 确认该歌曲已在曲库中并分析完成
+**Q：识别不到歌曲？ / Recognition fails?**
+- 检查输入电平表是否有信号 / Check the input level meter for signal
+- 确认该歌曲已在曲库中并分析完成 / Confirm the song is in the library and analysed
 - 查看 `data/vjvision.log` 中的置信度数值，低于 0.25 通常是音量过低或音频质量差
+  Check `data/vjvision.log` for confidence; below 0.25 usually means too quiet or poor quality
 
-**Q：不支持 m4a / aac？**
+**Q：不支持 m4a / aac？ / m4a / aac not supported?**
 - 当前使用 libsndfile 解码，原生不支持 m4a/aac。建议转成 flac 或 mp3 后再分析。
+  libsndfile is used for decoding; m4a/aac are not natively supported. Convert to flac or mp3 first.
 
-**Q：切歌反应慢？**
+**Q：切歌反应慢？ / Slow track switching?**
 - 长混音（cross-fade）期间两首歌重叠，置信度爬升较慢，属正常现象
+  During long cross-fades two songs overlap, so confidence climbs slowly — normal
 - 可降低 `match_interval` 或切歌阈值提高响应速度，但会增加误判风险
+  Lower `match_interval` or the switch threshold for faster response (more false positives)
 
-**Q：关闭控制台后可视化窗口没关？**
+**Q：关闭控制台后可视化窗口没关？ / Visualizer stays open after closing console?**
 - v1.1.1+ 已修复：可视化子进程会检测父进程存活，主进程退出后自动关闭
+  Fixed in v1.1.1+: the visualizer child detects parent liveness and exits automatically
 
-## 技术架构
+## 技术架构 / Architecture
 
 ```
 main.py
@@ -123,23 +149,22 @@ main.py
 └── DebugUI            →  CustomTkinter 控制面板（主线程）
 ```
 
-- 进程间通信：`multiprocessing.Queue`
-- 指纹算法：Dejavu（声学指纹 + 哈希匹配）
-- 音频解码：soundfile（libsndfile，支持 24-bit FLAC）
+- 进程间通信 IPC：`multiprocessing.Queue`
+- 指纹算法 Fingerprinting：Dejavu（声学指纹 + 哈希匹配）
+- 音频解码 Decoding：soundfile（libsndfile，支持 24-bit FLAC）
+- 国际化 i18n：`vjvision/i18n.py`（中英双语，语言偏好持久化）
 
-## 版本历史
-
-见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
-
-## 许可证
+## 许可证 / License
 
 本项目采用 **MIT License** —— 开源且**必须署名**。
+This project uses the **MIT License** — open source with **attribution required**.
 
 任何人使用、复制、修改、分发本软件时，必须保留原始版权声明和许可证全文。详见 [LICENSE](LICENSE)。
+Anyone using, copying, modifying or distributing this software must retain the original copyright notice and full license text. See [LICENSE](LICENSE).
 
-### 第三方依赖许可证
+### 第三方依赖许可证 / Third-party Licenses
 
-| 依赖 | 许可证 |
+| 依赖 Dependency | 许可证 License |
 |------|--------|
 | sounddevice | MIT |
 | soundfile | BSD-3-Clause |
@@ -148,7 +173,13 @@ main.py
 | pygame-ce | LGPL-2.1 |
 | customtkinter | MIT |
 | Pillow | HPND（MIT 兼容） |
-| mysql-connector-python | GPLv2 + FOSS Exception（允许与 MIT 联用） |
+| mysql-connector-python | GPLv2 + FOSS Exception |
 | mutagen | GPLv2+ |
 
-> **注意**：`mutagen` 为 GPLv2+ 许可证。若需严格保持项目整体为 MIT，可考虑替换为 `tinytag`（MIT）。当前分发形式下，使用者应同时遵守 mutagen 的 GPLv2+ 条款。
+> **注意 Note**：`mutagen` 为 GPLv2+ 许可证。当前分发形式下，使用者应同时遵守 mutagen 的 GPLv2+ 条款。
+> `mutagen` is GPLv2+. Under the current distribution, users must also comply with mutagen's GPLv2+ terms.
+
+## 版本历史 / Changelog
+
+见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+See [RELEASE_NOTES.md](RELEASE_NOTES.md).

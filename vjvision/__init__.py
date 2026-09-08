@@ -4,7 +4,7 @@ Top-level package re-exports the most useful entry points.
 """
 from __future__ import annotations
 
-__version__ = "1.1.3-beta"
+__version__ = "1.1.4"
 
 # Re-export Settings singleton (used by every module).
 from . import config  # noqa: F401  (ensures config side-effects run first)

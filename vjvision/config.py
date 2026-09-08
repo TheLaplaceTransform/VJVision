@@ -135,6 +135,8 @@ class Settings:
     # 0-based monitor index for the visualizer window (right display).
     # Set to 0 if you only have one display and want it on the primary screen.
     visualizer_display: int = 1
+    # UI language: "zh" (中文) or "en" (English).
+    language: str = "zh"
 
 
 SETTINGS = Settings()
@@ -159,6 +161,7 @@ def save_prefs() -> None:
         "audio_device": SETTINGS.audio_device,
         "music_dir": str(SETTINGS.music_dir),
         "visualizer_display": SETTINGS.visualizer_display,
+        "language": SETTINGS.language,
         "visual": asdict(SETTINGS.visual),
     }
     try:
@@ -188,6 +191,8 @@ def load_prefs() -> None:
         SETTINGS.music_dir = Path(prefs["music_dir"])
     if "visualizer_display" in prefs:
         SETTINGS.visualizer_display = int(prefs["visualizer_display"])
+    if "language" in prefs:
+        SETTINGS.language = str(prefs["language"])
 
     v = prefs.get("visual")
     if isinstance(v, dict):
