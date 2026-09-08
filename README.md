@@ -108,7 +108,7 @@ python -m PyInstaller VJVision.spec --noconfirm --clean
 Or use the one-click release script (build + commit + push + create GitHub Release):
 
 ```powershell
-.\release.ps1 -Version 1.2.0 -Notes "GPU acceleration"
+.\release.ps1 -Version 1.2.0-beta -Notes "GPU acceleration beta"
 ```
 
 ## 数据目录说明 / Data Directories

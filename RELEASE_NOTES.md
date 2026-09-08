@@ -1,6 +1,6 @@
 # VJVision 发布说明
 
-## v1.2.0 (2026-09-09)
+## v1.2.0-beta (2026-09-09)
 
 ### GPU 硬件加速渲染
 - 可视化窗口新增 SDL2 GPU 渲染路径（`pygame._sdl2.video.Renderer`，`accelerated + vsync`），封面旋转/背景缩放/频谱绘制全部走 GPU 纹理，垂直同步消除撕裂
