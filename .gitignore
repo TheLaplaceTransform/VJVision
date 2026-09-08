@@ -3,14 +3,17 @@ build/
 dist-onefile/
 dist/
 *.spec.bak
+*.zip
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 
-# Cache & runtime data
+# Cache & runtime data (regenerated on first run)
 cache/covers/
+cache/*.db
+cache/*.sqlite
 cache/vjvision.log
 data/vjvision.log
 
