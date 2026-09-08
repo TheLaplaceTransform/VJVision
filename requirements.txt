@@ -1,0 +1,21 @@
+# Audio capture
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24,<2.0
+
+# Fingerprinting (dejavu requires MySQL + pyaudio; we only use dejavu's core)
+mysql-connector-python>=8.0  # driver dejavu's MySQLDatabase expects
+dejavu>=0.1.0           # audio fingerprinting library (worldveil/dejavu fork on PyPI)
+
+# Metadata
+mutagen>=1.47.0
+
+# Rendering
+pygame-ce>=2.4.0        # community-edition pygame (SDL2, multi-display aware)
+
+# Debug UI
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# Optional: ffmpeg must be on PATH (dejavu uses pydub to convert flac/wav -> wav)
+# Install ffmpeg via winget: `winget install Gyan.FFmpeg`
