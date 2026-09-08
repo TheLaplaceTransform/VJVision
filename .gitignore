@@ -1,22 +1,31 @@
-# Build artifacts
+# Build artifacts (NEVER commit)
 build/
-dist-onefile/
 dist/
+dist-onefile/
 *.spec.bak
 *.zip
+*.exe
+*.egg-info/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 
 # Cache & runtime data (regenerated on first run)
 cache/covers/
 cache/*.db
 cache/*.sqlite
-cache/vjvision.log
-data/vjvision.log
+cache/*.log
+data/
+*.log
 
 # IDE
 .vscode/
 .idea/
+
+# Temp
+tmp/
+*.tmp
+

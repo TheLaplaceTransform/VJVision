@@ -61,7 +61,10 @@ if (-not $Notes) {
 
 # --- 更新版本号 ---
 $newContent = $content -replace '__version__\s*=\s*"[^"]+"', "__version__ = `"$Version`""
-Set-Content -Path $initFile -Value $newContent -NoNewline
+# Write UTF-8 WITHOUT BOM (PowerShell 5's Set-Content adds a BOM which
+# pollutes Python source files).
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($initFile, $newContent, $utf8NoBom)
 Write-Host "版本号已更新为 $Version" -ForegroundColor Green
 
 # --- 构建 exe ---

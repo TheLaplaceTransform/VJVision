@@ -1,4 +1,4 @@
-"""VJVision: real-time audio-reactive visualizer for DJ sets.
+﻿"""VJVision: real-time audio-reactive visualizer for DJ sets.
 
 Top-level package re-exports the most useful entry points.
 """
