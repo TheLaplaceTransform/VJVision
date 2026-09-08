@@ -478,6 +478,20 @@ class MatcherThread(threading.Thread):
 
         if result.confidence < MIN_ACCEPT_CONFIDENCE:
             # --- Tentative zone ---
+            # First-song guard: before any track has been hard-confirmed
+            # (current_track_path is None) we must NOT show a pulsing
+            # tentative preview from a low-confidence hit.  A stray
+            # noise/ambient match at 0.06–0.30 would otherwise lock the
+            # display onto the wrong song and pulse it.  Wait silently
+            # for a ≥0.30 hit to confirm the first track instead.
+            if self._current_track_path is None:
+                self._send_viz({"type": "status", "text": "Listening…"})
+                log.info(
+                    "Ignoring tentative hit for first track: %s conf=%.2f",
+                    Path(result.file_path).name, result.confidence,
+                )
+                return
+
             # A different song showing up here (even at low confidence)
             # means a cross-fade may be starting.  Trigger the mix pulse
             # immediately instead of waiting for a ≥0.30 hit — otherwise
