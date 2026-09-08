@@ -81,7 +81,7 @@ def _register_sqlite_backend() -> None:
     from .dejavu_sqlite import SQLiteDatabase  # noqa: F401 (bundling + sanity)
 
     _djv_settings.DATABASES["sqlite"] = (
-        "vjvisual.dejavu_sqlite", "SQLiteDatabase")
+        "vjvision.dejavu_sqlite", "SQLiteDatabase")
 
 
 @dataclass

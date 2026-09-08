@@ -975,7 +975,7 @@ def run(queue, display_index: int = 1) -> None:
 
     _set_display_env(display_index)
     pygame.init()
-    pygame.display.set_caption(f"VJ-Visual 可视化输出  v{_version}")
+    pygame.display.set_caption(f"VJVision 可视化输出  v{_version}")
 
     # ----- mutable rendering state ---------------------------------------
     # Wrapped in a dict so the nested ``_reinit_display`` helper can mutate

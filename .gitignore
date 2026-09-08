@@ -11,8 +11,8 @@ __pycache__/
 
 # Cache & runtime data
 cache/covers/
-cache/vj_visual.log
-data/vj_visual.log
+cache/vjvision.log
+data/vjvision.log
 
 # IDE
 .vscode/
