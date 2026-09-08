@@ -87,10 +87,12 @@ class CaptureConfig:
                                      # 8s = too short for low-hash-density songs
                                      # (confidence 0.05-0.12); 12s stabilises
                                      # real matches at 0.20-0.85.
-    match_interval: int = 6          # seconds between recognition attempts.
+    match_interval: int = 4          # seconds between recognition attempts.
                                      # 12s was too slow when DJ switches tracks;
-                                     # 6s gives us ~2 recognition opportunities
-                                     # per track change to confirm identity.
+                                     # 6s gave ~2 opportunities per change but
+                                     # long cross-fades still took ~28s to
+                                     # confirm; 4s catches the confidence climb
+                                     # faster during extended mixes.
     match_confirmations: int = 2     # require N consecutive hits before
                                      # switching the displayed track.  This
                                      # filters out the occasional low-confidence
