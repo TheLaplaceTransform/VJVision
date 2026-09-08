@@ -131,6 +131,24 @@ main.py
 
 见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
-## License
+## 许可证
 
-MIT
+本项目采用 **MIT License** —— 开源且**必须署名**。
+
+任何人使用、复制、修改、分发本软件时，必须保留原始版权声明和许可证全文。详见 [LICENSE](LICENSE)。
+
+### 第三方依赖许可证
+
+| 依赖 | 许可证 |
+|------|--------|
+| sounddevice | MIT |
+| soundfile | BSD-3-Clause |
+| numpy | BSD-3-Clause |
+| dejavu | MIT |
+| pygame-ce | LGPL-2.1 |
+| customtkinter | MIT |
+| Pillow | HPND（MIT 兼容） |
+| mysql-connector-python | GPLv2 + FOSS Exception（允许与 MIT 联用） |
+| mutagen | GPLv2+ |
+
+> **注意**：`mutagen` 为 GPLv2+ 许可证。若需严格保持项目整体为 MIT，可考虑替换为 `tinytag`（MIT）。当前分发形式下，使用者应同时遵守 mutagen 的 GPLv2+ 条款。
