@@ -1,6 +1,10 @@
-# VJVision 发布说明
+# VJVision 发布说明 / Release Notes
 
 > 当前所有版本均为 **beta 测试版**（GitHub Release 均标记为 Pre-release），尚未发布正式版。
+> All releases are **beta pre-releases** (every GitHub Release is marked Pre-release); there is no stable release yet.
+>
+> **格式约定 / Format**：每个版本都包含中文与英文两段（中文在前，英文在 `### English` 段），内容一一对应、同步维护。
+> Each version contains both a Chinese block and an `### English` block covering the same changes.
 
 ## v1.2.1-beta (2026-09-09)
 
@@ -18,6 +22,23 @@
 
 ### 界面文案
 - 「⚠ 强制重建索引」更名为「**⚠ 强制重新分析**」（中英文同步），日志面板相关提示一并更新，更便于理解
+
+### English
+
+#### Stability: no more crash without audio hardware
+- Fixed a startup crash when the PC has no sound card, the audio driver is broken, or the Windows Audio service is disabled: audio initialization failure now shows a clear message ("No usable audio device or driver detected…") while the rest of the app (visualizer, library analysis) keeps working.
+- Matcher command handling is now guarded per command: a single failing command no longer stops level metering/recognition entirely; unplugging the audio device while running no longer crashes.
+- The visualizer subprocess isolates its audio subsystem (`SDL_AUDIODRIVER=dummy`), so the visualizer window opens even with no audio hardware.
+- Added a global exception hook: every uncaught exception is written to `cache/vjvision.log`, so packaged builds no longer crash "without any log".
+- Fixed a crash when clicking restart after manually closing the visualizer window (a stale quit message lingered in the queue and poisoned the new process); the two "Restart" / "Reset" buttons are merged into one **🔄 Reset Visualizer**.
+
+#### Library analysis: automatic tolerance for corrupt audio
+- Added an **ffmpeg tolerant-decode fallback**: files libsndfile cannot decode (e.g. a truncated download FLAC reporting "decoder lost sync") are automatically decoded via ffmpeg, which skips broken frames, instead of failing the whole song. Successful fallbacks are logged as `Recovered via ffmpeg fallback`.
+- When ffmpeg is unavailable or the file is too badly corrupted, an actionable message is shown (install ffmpeg or re-encode the file and retry) instead of a bare English `LibsndfileError`.
+- Verified with a random sample of 100 FLAC files from the real library — all passed (avg 3.4 s/song).
+
+#### UI wording
+- "⚠ Force Re-index" renamed to "**⚠ Force Re-analyze**" (both Chinese and English); related log-panel messages updated for clarity.
 
 ---
 
