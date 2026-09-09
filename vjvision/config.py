@@ -43,7 +43,7 @@ def _compute_base_dirs() -> tuple[Path, Path, Path, Path]:
         else:
             app_dir = exe_dir
 
-        # 【修改这里】：将 data 目录指向 bundle_dir（即内嵌到 .app 内部的 _MEIPASS 中）
+        # 将 data 目录指向 bundle_dir（即内嵌到 .app 内部的 _MEIPASS 中）
         data_dir = bundle_dir / "data"
     else:
         app_dir = Path(__file__).resolve().parent.parent
