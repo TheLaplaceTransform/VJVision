@@ -31,7 +31,6 @@ log = logging.getLogger("vj")
 import sys
 import os
 
-
 def _auto_detect_virtual_audio() -> Optional[int]:
     """自动扫描并返回 Mac 上的虚拟声卡索引 (如 BlackHole) 以实现系统内录"""
     try:
