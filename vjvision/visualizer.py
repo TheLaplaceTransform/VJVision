@@ -1,4 +1,4 @@
-﻿"""2nd-screen visualizer process.
+"""2nd-screen visualizer process.
 
 Launched as a separate process (multiprocessing.Process(target=run, args=...)).
 Polls a multiprocessing.Queue for messages:
@@ -1086,6 +1086,13 @@ def run(queue, display_index: int = 1) -> None:
     # This hint is read when each texture is created and selects smooth
     # bilinear filtering instead. Must be set before pygame.init().
     os.environ["SDL_RENDER_SCALE_QUALITY"] = "linear"
+    # The visualizer never plays audio.  pygame.init() brings the mixer
+    # up anyway, and SDL audio init can fail on machines with no audio
+    # hardware — force the dummy audio driver so the viz subprocess is
+    # completely independent of any sound card/driver.  setdefault()
+    # leaves an explicit override (set by the user or the environment)
+    # untouched.
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     # Declare per-monitor DPI awareness BEFORE SDL creates a window.
     # Without this the process is DPI-virtualised: SDL reports a fallback
     # 640x480 desktop in fullscreen (instead of the monitor's real native
@@ -1343,8 +1350,40 @@ def run(queue, display_index: int = 1) -> None:
                         resizable=True,
                     )
                 rs["sdl_window"] = window
-                rs["renderer"] = video.Renderer(
-                    window, accelerated=1, vsync=1)
+                # Force present-vsync. The vsync=1 flag below is only a
+                # REQUEST: if SDL auto-selects a driver without vsync
+                # support (or silently falls back to its software
+                # driver), present() never blocks on the monitor
+                # refresh and the picture tears — clock.tick(60) cannot
+                # fix that. Pin a driver whose present path is
+                # guaranteed tear-free: direct3d11 (flip-model; vsync
+                # works in BOTH windowed and borderless-fullscreen),
+                # then legacy direct3d, then SDL's default accelerated
+                # driver. SDL_HINT_RENDER_DRIVER is read at
+                # CreateRenderer time, so setting it per-attempt here is
+                # enough; a failed attempt leaves no renderer bound and
+                # the same window can be retried.
+                renderer = None
+                last_rend_exc = None
+                active_drv = None
+                for drv in (["direct3d11", "direct3d"]
+                            if os.name == "nt" else []) + [None]:
+                    if drv:
+                        os.environ["SDL_HINT_RENDER_DRIVER"] = drv
+                    else:
+                        os.environ.pop("SDL_HINT_RENDER_DRIVER", None)
+                    try:
+                        renderer = video.Renderer(
+                            window, accelerated=1, vsync=1)
+                        active_drv = drv
+                        break
+                    except Exception as exc:  # driver missing / refused
+                        last_rend_exc = exc
+                        renderer = None
+                if renderer is None:
+                    raise last_rend_exc or RuntimeError(
+                        "no accelerated renderer available")
+                rs["renderer"] = renderer
                 sw, sh = window.size
                 rs["screen_w"], rs["screen_h"] = int(sw), int(sh)
                 # On high-DPI displays the drawable surface has more
@@ -1353,10 +1392,44 @@ def run(queue, display_index: int = 1) -> None:
                 # fill the whole window (otherwise content renders only in
                 # the top-left fraction and the rest is black).
                 rs["renderer"].logical_size = (int(sw), int(sh))
-                log.info(
-                    "GPU renderer initialised (accelerated+vsync) size=%dx%d",
-                    int(sw), int(sh),
-                )
+                # Verify present-vsync empirically. pygame-ce 2.5.8's
+                # Renderer exposes no driver/flags info, so measure the
+                # behaviour itself: with vsync active, present() blocks
+                # until the monitor's next refresh (~16.7 ms @60 Hz,
+                # ~8.3 ms @120 Hz, ~4.2 ms @240 Hz); without vsync a
+                # bare clear+present returns in well under a millisecond
+                # and the picture tears. Checked ONCE per process — the
+                # driver and vsync state are identical on later reinits
+                # (resize/fullscreen), so drag-resizing isn't stalled.
+                drv_label = active_drv or "auto"
+                if not rs.get("vsync_checked"):
+                    try:
+                        rs["renderer"].draw_color = (0, 0, 0, 255)
+                        n_probe = 10
+                        t0 = time.perf_counter()
+                        for _ in range(n_probe):
+                            rs["renderer"].clear()
+                            rs["renderer"].present()
+                        per_frame = (time.perf_counter() - t0) / n_probe
+                        # 3.5 ms threshold: even a 240 Hz refresh blocks
+                        # 4.2 ms; an unsynced present is sub-millisecond.
+                        vsync_on = per_frame >= 0.0035
+                        rs["vsync_checked"] = True
+                        rs["vsync_active"] = vsync_on
+                    except Exception as exc:
+                        log.warning("vsync probe failed: %s", exc)
+                        vsync_on = False
+                else:
+                    vsync_on = bool(rs.get("vsync_active"))
+                if vsync_on:
+                    log.info(
+                        "GPU renderer initialised: driver=%s vsync=ON "
+                        "size=%dx%d", drv_label, int(sw), int(sh))
+                else:
+                    log.warning(
+                        "GPU renderer initialised: driver=%s vsync=OFF "
+                        "(present may tear) size=%dx%d",
+                        drv_label, int(sw), int(sh))
                 # Software fallback path below is skipped.
                 screen = None
             except Exception as exc:

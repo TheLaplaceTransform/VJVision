@@ -20,6 +20,13 @@ from .config import SETTINGS, CACHE_DIR, FINGERPRINTS_DB, SONG_PATHS_DB
 
 log = logging.getLogger(__name__)
 
+# Files this worker process decoded via the ffmpeg tolerant-decode
+# fallback (libsndfile rejected them — e.g. a truncated/corrupt FLAC).
+# Maps absolute file path -> human note.  Per-process: indexing runs in
+# spawned workers, so the main process reads the note carried back in
+# the worker result tuple, not this dict.
+_fallback_notes: dict = {}
+
 
 # --- Windows: suppress black console windows for multiprocessing workers ---
 # ``mp.set_executable(sys.executable)`` alone is not enough on Windows — the
@@ -248,15 +255,30 @@ class FingerprintDB:
             read at the file's native rate and resample via
             ``scipy.signal.resample_poly`` (polyphase, 5-10x faster than
             the old FFT-based ``resample``).
-            """
-            info = sf.info(file_name)
-            sr = info.samplerate
-            stop_frames = int(limit * sr) if limit else -1
 
-            data, _ = sf.read(
-                file_name, dtype="int16", always_2d=False,
-                stop=stop_frames,
-            )
+            If libsndfile rejects the whole file (a truncated/corrupt
+            download raises "flac decoder lost sync" etc.), we fall back
+            to ffmpeg, which skips broken frames and decodes everything
+            else — see :meth:`_decode_via_ffmpeg`.
+            """
+            try:
+                info = sf.info(file_name)
+                sr = info.samplerate
+                stop_frames = int(limit * sr) if limit else -1
+
+                data, _ = sf.read(
+                    file_name, dtype="int16", always_2d=False,
+                    stop=stop_frames,
+                )
+            except Exception as sf_exc:
+                # libsndfile is unforgiving: one bad frame near EOF makes
+                # it refuse the ENTIRE file.  ffmpeg is tolerant, so use
+                # it as the fallback path (native rate, same downstream
+                # resample pipeline → consistent fingerprints).
+                data, sr = cls._decode_via_ffmpeg(
+                    file_name, limit,
+                    sf_error=f"{type(sf_exc).__name__}: {sf_exc}",
+                )
 
             if data.ndim == 1:
                 channels = [data]
@@ -267,6 +289,8 @@ class FingerprintDB:
             channels, sr = cls._resample_channels(channels, sr, TARGET)
 
             # File SHA1 — same algorithm as dejavu's decoder.unique_hash.
+            # Hash the ORIGINAL file regardless of decode path, so a
+            # ffmpeg-recovered song keeps a stable identity.
             s = sha1()
             with open(file_name, "rb") as fh2:
                 while True:
@@ -277,6 +301,102 @@ class FingerprintDB:
             return channels, int(sr), s.hexdigest().upper()
 
         _decoder.read = _patched_read
+
+    @staticmethod
+    def _find_ffmpeg() -> Optional[str]:
+        """Locate an ffmpeg executable: PATH first, then app-local dir."""
+        import shutil
+        exe = shutil.which("ffmpeg")
+        if exe:
+            return exe
+        # PyInstaller bundle / ffmpeg.exe shipped next to the executable.
+        try:
+            cand = os.path.join(
+                os.path.dirname(os.path.abspath(_sys.executable)),
+                "ffmpeg.exe" if os.name == "nt" else "ffmpeg",
+            )
+            if os.path.isfile(cand):
+                return cand
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _decode_via_ffmpeg(cls, file_name: str, limit, sf_error: str):
+        """Tolerant decode for files libsndfile rejects.
+
+        ffmpeg skips broken frames ("invalid residual", "lost sync") and
+        decodes the rest instead of refusing the whole file.  We decode
+        to a temporary 16-bit WAV at the file's NATIVE sample rate, then
+        return ``(data, sr)`` in exactly the shape the healthy soundfile
+        path produces — the caller runs the same channel-split and
+        polyphase-resample pipeline afterwards.
+
+        Raises RuntimeError with an actionable bilingual message when
+        ffmpeg is missing or also fails.  Never returns partial silence.
+        """
+        import subprocess
+        import tempfile
+        import soundfile as sf
+
+        name = os.path.basename(file_name)
+        ff = cls._find_ffmpeg()
+        if not ff:
+            raise RuntimeError(
+                f"音频文件可能已损坏（soundfile 解码失败：{sf_error}），"
+                f"且系统中未找到 ffmpeg 进行容错解码。请安装 ffmpeg 后重试，"
+                f"或用转码工具（foobar2000/格式工厂等）将该文件重新转码后"
+                f"再加入曲库。 | file may be corrupted and ffmpeg was not "
+                f"found on PATH"
+            )
+
+        tmp_fd, tmp_path = tempfile.mkstemp(prefix="vjff_", suffix=".wav")
+        os.close(tmp_fd)
+        try:
+            cmd = [ff, "-hide_banner", "-v", "error", "-y",
+                   "-i", file_name, "-vn"]
+            if limit:
+                cmd += ["-t", str(limit)]
+            cmd += ["-f", "wav", "-acodec", "pcm_s16le", tmp_path]
+            kwargs = dict(capture_output=True, text=True, timeout=900)
+            if os.name == "nt":
+                kwargs["creationflags"] = _CREATE_NO_WINDOW
+            try:
+                r = subprocess.run(cmd, **kwargs)
+            except FileNotFoundError:
+                raise RuntimeError(
+                    f"音频文件可能已损坏（{sf_error}），ffmpeg 无法启动。"
+                    f" | ffmpeg disappeared at runtime")
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    f"ffmpeg 解码超时（文件可能过大或损坏严重）：{name}"
+                    f" | ffmpeg decode timed out")
+            if r.returncode != 0:
+                tail = (r.stderr or "").strip()[-400:]
+                raise RuntimeError(
+                    f"音频文件损坏严重，soundfile 与 ffmpeg 均无法解码"
+                    f"（ffmpeg: {tail}）。请重新获取或转码该文件后重试。"
+                    f" | both soundfile and ffmpeg failed to decode"
+                )
+            data, sr = sf.read(tmp_path, dtype="int16", always_2d=False)
+            if data is None or len(data) == 0:
+                raise RuntimeError(
+                    f"ffmpeg 解码结果为空（文件可能损坏严重）：{name}"
+                    f" | ffmpeg produced no audio"
+                )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        # Note for the main process — worker log handlers don't reach
+        # the main log file, so the worker result tuple carries this.
+        _fallback_notes[os.path.abspath(file_name)] = (
+            f"soundfile failed ({sf_error}); decoded via ffmpeg fallback"
+        )
+        log.warning("ffmpeg fallback decode OK for %s: %s", name, sf_error)
+        return data, int(sr)
 
     @staticmethod
     def _optimize_dejavu_params() -> None:
@@ -505,8 +625,9 @@ class FingerprintDB:
         ``fingerprint_file`` (compute + write) leads to "database is
         locked" errors once the store grows past a few hundred songs.
 
-        Returns ``(song_name, hashes, file_hash, None)`` on success or
-        ``(None, None, None, error_msg)`` on error.
+        Returns ``(song_name, hashes, file_hash, note)`` on success
+        (note is None, or a message when the ffmpeg tolerant-decode
+        fallback was used) or ``(None, None, None, error_msg)`` on error.
         """
         try:
             from dejavu import Dejavu
@@ -519,7 +640,10 @@ class FingerprintDB:
             hashes, file_hash = Dejavu.get_file_fingerprints(
                 path_str, self._djv.limit, print_output=False,
             )
-            return song_name, hashes, file_hash, None
+            # Carry back a note if the decoder had to use the ffmpeg
+            # fallback (worker-process logs don't reach the main log).
+            note = _fallback_notes.pop(os.path.abspath(path_str), None)
+            return song_name, hashes, file_hash, note
         except Exception as exc:
             # Return the error message so the MAIN process can log it —
             # worker-process log.error() is often not captured by the
@@ -672,6 +796,9 @@ class FingerprintDB:
                         new_count += 1
                         self._write_sqlite(path_str, sid)
                         status = "Done"
+                        if err:  # ffmpeg fallback note from the worker
+                            log.warning("Recovered via ffmpeg fallback: %s (%s)",
+                                        fname, err)
                     else:
                         fail_count += 1
                         status = "Failed"
@@ -761,6 +888,9 @@ class FingerprintDB:
                         new_count += 1
                         self._write_sqlite(path_str, sid)
                         status = "Done"
+                        if err:  # ffmpeg fallback note from the worker
+                            log.warning("Recovered via ffmpeg fallback: %s (%s)",
+                                        fname, err)
                     else:
                         fail_count += 1
                         status = "Failed"
@@ -876,7 +1006,7 @@ class FingerprintDB:
         log.info("force_reindex: clearing all stored fingerprints...")
         self.clear_all()
         if progress:
-            progress(0, 1, "Database cleared.  Re-indexing all songs...")
+            progress(0, 1, "Database cleared.  Re-analyzing all songs...")
         return self.index_library(progress=progress)
 
     def _sync_from_dejavu(self) -> None:

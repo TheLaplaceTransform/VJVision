@@ -119,6 +119,27 @@ class VisualizerManager:
             log.warning("viz control send '%s' failed (pipe): %s", mtype, exc)
             return False
 
+    def _drain_queue(self) -> int:
+        """Remove every message currently buffered in the viz queue.
+
+        Returns the number of messages dropped. A stale ``quit`` (or any
+        other control message) left in the queue pipe by a previous
+        process would be drained by the FRESH process on its very first
+        frame — a leftover ``quit`` then makes the new window exit
+        instantly (the "restart flashes and dies" bug that happened
+        after closing the visualizer window manually).
+        """
+        drained = 0
+        try:
+            while True:
+                self._viz_queue.get_nowait()
+                drained += 1
+        except _queue.Empty:
+            pass
+        except OSError:
+            pass
+        return drained
+
     def start(self) -> None:
         """Spawn the visualizer process. Safe to call even if one is
         already running (it will be terminated first)."""
@@ -126,6 +147,16 @@ class VisualizerManager:
             if self.alive:
                 log.info("Visualizer already running — restarting...")
                 self.stop()
+            # Purge messages the previous process never consumed so the
+            # new one starts from a clean queue (see _drain_queue). Two
+            # passes: mp.Queue flushes puts into the pipe from a feeder
+            # thread asynchronously, so re-drain after a tiny wait.
+            drained = self._drain_queue()
+            time.sleep(0.05)
+            drained += self._drain_queue()
+            if drained:
+                log.info("Drained %d stale viz message(s) before start",
+                         drained)
             log.info("Starting visualizer on display %d", self._display_index)
             self.proc = self._ctx.Process(
                 target=run_visualizer,
@@ -143,7 +174,14 @@ class VisualizerManager:
         with self._lock:
             if self.proc is None:
                 return
-            self._send_control({"type": "quit"})
+            # Only send quit to a LIVE child. If it already exited (user
+            # closed the window, SDL crash), the message would stay in
+            # the queue pipe with no consumer; the next spawned process
+            # would then read that stale quit on its first frame and exit
+            # instantly (the restart-flash bug). start() drains the queue
+            # as a second line of defence.
+            if self.proc.is_alive():
+                self._send_control({"type": "quit"})
             try:
                 self.proc.join(timeout=timeout)
                 if self.proc.is_alive():
@@ -201,6 +239,45 @@ def _setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
 
 
+def _install_crash_handlers() -> None:
+    """Make every uncaught exception land in the log file.
+
+    In windowed/frozen builds there is no console, so a crash otherwise
+    vanishes silently ("crash, no log"): stderr goes nowhere.  We route
+    both main-thread and worker-thread uncaught exceptions through the
+    logger (RotatingFileHandler => cache/vjvision.log) and show a small
+    error dialog for fatal main-thread crashes so the user knows what
+    happened.
+    """
+
+    def _persist(exc_type, exc, tb, where: str) -> None:
+        log.error("Uncaught exception%s:", where, exc_info=(exc_type, exc, tb))
+
+    def _sys_hook(exc_type, exc, tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        _persist(exc_type, exc, tb, "")
+        # Fatal main-thread crash - the window is about to die; show one
+        # dialog so silent "flash and vanish" exits leave a clue on screen.
+        try:
+            import tkinter.messagebox as _mb
+            _mb.showerror(
+                "VJVision",
+                f"程序遇到未处理的错误，详细信息已写入日志文件：\n"
+                f"cache/vjvision.log\n\n{exc_type.__name__}: {exc}",
+            )
+        except Exception:
+            pass
+
+    def _thread_hook(args) -> None:
+        _persist(args.exc_type, args.exc_value, args.exc_traceback,
+                 f" in thread {args.thread.name!r}")
+
+    sys.excepthook = _sys_hook
+    threading.excepthook = _thread_hook
+
+
 def main() -> int:
     # Required for PyInstaller-frozen apps: spawn-ed child processes
     # (visualizer process, dejavu indexing pool workers) re-launch this
@@ -218,6 +295,7 @@ def main() -> int:
     mp.set_executable(sys.executable)
 
     _setup_logging()
+    _install_crash_handlers()
 
     # Load persisted user prefs (device choice, music dir, visual
     # settings) before constructing anything so the UI opens with the

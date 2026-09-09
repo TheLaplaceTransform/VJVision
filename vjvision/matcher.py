@@ -206,21 +206,47 @@ class MatcherThread(threading.Thread):
     #                recognition loop.  Toggled by the Start/Stop buttons;
     #                stopping capture returns to monitor mode (the stream
     #                stays open, no audio-device re-open click).
-    def _reconfigure_capture(self, device_index) -> None:
+    def _reconfigure_capture(self, device_index) -> bool:
         """(Re)build the AudioCapture object and reopen the stream.
 
         The stream always comes up in MONITOR mode; callers that want
         recognition (``_capture_running``) re-enable it via
         :meth:`_start_capture`.
+
+        Returns True if a capture object exists afterwards (stream may
+        still be closed — e.g. no device present). Never raises: a
+        machine with no audio hardware/drivers must degrade to
+        "metering off, app still runs", not kill the matcher thread.
         """
-        if self._capture is not None:
-            self._capture.stop()
-        self._capture = AudioCapture(
-            device=device_index, on_spectrum=self._on_spectrum,
-        )
-        # New object defaults to monitor (spectrum gated off).
-        self._capture.spectrum_enabled = self._capture_running
-        self._open_stream_monitor()
+        old = self._capture
+        try:
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            self._capture = AudioCapture(
+                device=device_index, on_spectrum=self._on_spectrum,
+            )
+            # New object defaults to monitor (spectrum gated off).
+            self._capture.spectrum_enabled = self._capture_running
+            self._open_stream_monitor()
+            return True
+        except Exception as exc:
+            # AudioUnavailableError (no backend / Pa_Initialize failed /
+            # pyaudio not installed) or anything else during build: drop
+            # the half-constructed object and tell the operator plainly.
+            self._capture = None
+            self._capture_running = False
+            try:
+                from .audio_capture import AudioUnavailableError
+                if isinstance(exc, AudioUnavailableError):
+                    self._log(f"{t('cap.no_audio')} ({exc})", "error")
+                else:
+                    self._log(f"{t('cap.init_failed')}: {exc}", "error")
+            except Exception:
+                log.warning("_reconfigure_capture failed: %s", exc)
+            return False
 
     def _open_stream_monitor(self) -> bool:
         """Open the InputStream for level metering. Errors are non-fatal:
@@ -233,8 +259,9 @@ class MatcherThread(threading.Thread):
             return True
         except Exception as exc:
             self._log(
-                f"Input monitor unavailable (device {self._device_index}): "
-                f"{exc}. Pick another device or press Start to retry.",
+                t("cap.monitor_unavailable").format(
+                    device=self._device_index, error=exc,
+                ),
                 "error",
             )
             return False
@@ -248,12 +275,13 @@ class MatcherThread(threading.Thread):
             self._open_stream_monitor()
 
     def _start_capture(self) -> None:
-        if self._capture is None:
-            self._reconfigure_capture(self._device_index)
-        if self._capture is None:
-            self._log("No audio capture available.", "error")
-            return
         try:
+            if self._capture is None:
+                if not self._reconfigure_capture(self._device_index):
+                    return  # error already logged
+            if self._capture is None:
+                self._log(t("cap.no_audio"), "error")
+                return
             # Stream may have failed to open at boot (device was busy or
             # missing) — retry now.
             if self._capture.current_level().get("active") is False:
@@ -264,7 +292,7 @@ class MatcherThread(threading.Thread):
             self._send_viz({"type": "status", "text": t("viz.capture_started")})
             self._log("Capture started.")
         except Exception as exc:
-            self._log(f"Capture start failed: {exc}", "error")
+            self._log(f"{t('cap.start_failed')}: {exc}", "error")
 
     def _stop_capture(self) -> None:
         # Return to MONITOR mode: recognition + spectrum off, but the
@@ -321,7 +349,7 @@ class MatcherThread(threading.Thread):
         """Clear MySQL + SQLite, then re-index everything from scratch."""
         self._ensure_fp()
         if self._fp is None:
-            self._log("Cannot re-index: dejavu not connected.", "error")
+            self._log("Cannot re-analyze: dejavu not connected.", "error")
             return
 
         # If the startup auto-repair thread is still running, wait for it
@@ -338,20 +366,20 @@ class MatcherThread(threading.Thread):
                 "type": "index_progress",
                 "done": done, "total": total, "info": info,
             })
-            if done % 50 == 0 or "Cleared" in info or "Re-indexing" in info:
+            if done % 50 == 0 or "Cleared" in info or "Re-analyzing" in info:
                 self._log(f"[{done}/{total}] {info}")
 
         def worker():
-            self._log("⚠ Force re-index: clearing ALL fingerprints...", "warning")
+            self._log("⚠ Force re-analyze: clearing ALL fingerprints...", "warning")
             try:
                 new = self._fp.force_reindex(progress)
                 stats = self._fp.stats()
                 self._send_ui({"type": "index_done", "songs": stats["songs"]})
                 self._send_ui({"type": "library_status",
                                **self._fp.library_status()})
-                self._log(f"✅ Re-index done: {new} new, total {stats['songs']}.")
+                self._log(f"✅ Re-analyze done: {new} new, total {stats['songs']}.")
             except Exception as exc:
-                self._log(f"Re-index failed: {exc}", "error")
+                self._log(f"Re-analyze failed: {exc}", "error")
 
         threading.Thread(target=worker, daemon=True, name="ForceReindexer").start()
 
@@ -886,10 +914,15 @@ class MatcherThread(threading.Thread):
             # refresh (including at boot, right after our monitor stream
             # already opened).  Skip the close/reopen cycle when the
             # selection is unchanged and the stream is already live.
-            already_live = (
-                self._capture is not None
-                and self._capture.current_level().get("active")
-            )
+            try:
+                already_live = (
+                    self._capture is not None
+                    and self._capture.current_level().get("active")
+                )
+            except Exception:
+                # Stream died / device vanished mid-session - treat as
+                # not live and go through the reconfigure path.
+                already_live = False
             if idx == self._device_index and already_live:
                 pass
             else:
@@ -974,10 +1007,20 @@ class MatcherThread(threading.Thread):
             self._log(f"Input monitor failed to start: {exc}", "error")
 
         while not self._stop_event.is_set():
-            # Drain the command queue.
+            # Drain the command queue.  A single bad message must never
+            # kill the matcher thread (that would silently stop metering
+            # and recognition for the whole session) — log and continue.
             try:
                 while True:
-                    self._handle_cmd(self.cmd.get_nowait())
+                    msg = self.cmd.get_nowait()
+                    try:
+                        self._handle_cmd(msg)
+                    except Exception as exc:
+                        log.exception("Command %r failed: %s", msg, exc)
+                        try:
+                            self._log(f"Command failed: {exc}", "error")
+                        except Exception:
+                            pass
             except _queue.Empty:
                 pass
 

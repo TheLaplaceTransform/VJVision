@@ -45,6 +45,16 @@ log = logging.getLogger(__name__)
 SpectrumCallback = Callable[[np.ndarray, float], None]
 
 
+class AudioUnavailableError(RuntimeError):
+    """Raised when no audio backend/device can be initialised.
+
+    Machines with no audio hardware (sound card disabled, no drivers,
+    audio service stopped) make PortAudio initialisation fail — callers
+    must treat this as a non-fatal condition: log a clear message and
+    keep the rest of the app running instead of crashing.
+    """
+
+
 class AudioCapture:
     """Thread-safe ring buffer fed by a :class:`pyaudio.Stream`.
 
@@ -74,8 +84,17 @@ class AudioCapture:
         self.spectrum_bins = cfg.spectrum_bins
 
         # One-time PyAudio instance.  Creating it is expensive on WASAPI
-        # (COM + audio session setup) so we keep it alive.
-        self._pa = pyaudio.PyAudio()
+        # (COM + audio session setup) so we keep it alive.  On machines
+        # with no audio hardware/drivers Pa_Initialize can fail — surface
+        # that as AudioUnavailableError so callers can degrade gracefully
+        # instead of taking the whole thread/process down.
+        try:
+            self._pa = pyaudio.PyAudio()
+        except Exception as exc:
+            raise AudioUnavailableError(
+                f"Audio backend initialisation failed (no audio device "
+                f"or driver available?): {exc}"
+            ) from exc
         self._pa_owned = True  # so __del__ terminates it
 
         # Resolve default sample rate + max channels for the chosen device.
@@ -151,7 +170,12 @@ class AudioCapture:
 
         out: list[dict] = []
         try:
-            for i in range(pa.get_device_count()):
+            try:
+                device_count = pa.get_device_count()
+            except Exception as exc:  # pragma: no cover
+                log.error("PortAudio get_device_count failed: %s", exc)
+                device_count = 0
+            for i in range(device_count):
                 try:
                     d = pa.get_device_info_by_index(i)
                 except Exception:
@@ -180,7 +204,10 @@ class AudioCapture:
                     "is_loopback": is_loop,
                 })
         finally:
-            pa.terminate()
+            try:
+                pa.terminate()
+            except Exception as exc:  # pragma: no cover
+                log.warning("PyAudio terminate failed during enum: %s", exc)
         return out
 
     @staticmethod
@@ -223,8 +250,11 @@ class AudioCapture:
             self._audio_callback(arr)
             return (None, pyaudio.paContinue)
 
-        self._stream = self._pa.open(
-            input_device_index=int(self.device),
+        # Omit input_device_index entirely when no device is selected —
+        # int(None) used to raise TypeError here; PortAudio then picks the
+        # system default input (and raises a catchable OSError when no
+        # default device exists on audio-less machines).
+        open_kwargs = dict(
             channels=self.channels,
             rate=self.sr,
             format=pyaudio.paInt16,
@@ -232,6 +262,12 @@ class AudioCapture:
             frames_per_buffer=self.block,
             stream_callback=_pa_callback,
         )
+        if self.device is not None:
+            try:
+                open_kwargs["input_device_index"] = int(self.device)
+            except (TypeError, ValueError):
+                pass
+        self._stream = self._pa.open(**open_kwargs)
         self._stream.start_stream()
 
     def stop(self) -> None:
@@ -298,13 +334,22 @@ class AudioCapture:
 
     # -- level meter ------------------------------------------------------
     def current_level(self) -> dict:
+        # is_active()/is_stopped() can raise once the underlying device is
+        # gone (USB soundcard unplugged, audio service stopped mid-stream)
+        # — report "inactive" in that case instead of propagating.
+        active = False
+        if self._stream is not None:
+            try:
+                active = bool(self._stream.is_active())
+            except Exception:
+                active = False
         return {
             "peak": max(0.0, min(1.0, self._peak)),
             "rms": max(0.0, min(1.0, self._rms)),
             "peak_hold": max(0.0, min(1.0, self._peak_decay)),
             "signal": self._signal_seen,
             "clips": self._clip_count,
-            "active": self._stream is not None and self._stream.is_active(),
+            "active": active,
         }
 
     SILENCE_THRESHOLD = 0.002

@@ -42,13 +42,13 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "prep.queue_count": "队列：{n} 个文件",
         "prep.analyze": "分析队列",
         "prep.cancel": "✖ 取消",
-        "prep.force_reindex": "⚠ 强制重建索引",
+        "prep.force_reindex": "⚠ 强制重新分析",
         "prep.refresh_status": "刷新状态",
         "prep.unknown": "曲库：未知",
         "prep.no_audio_in_folder": "[该文件夹中没有音频文件：{path}]",
         "prep.folder_added": "+ 文件夹：{path} → 已加入队列 {n} 个文件",
-        "prep.force_reindex_cancelled": "已取消强制重建索引。",
-        "prep.force_reindex_start": "⚠ 强制重建索引：正在清空全部数据并重新索引 {path}…",
+        "prep.force_reindex_cancelled": "已取消强制重新分析。",
+        "prep.force_reindex_start": "⚠ 强制重新分析：正在清空全部数据并重新分析 {path}…",
         "prep.queue_empty": "[队列为空] 请先选择音频文件。",
         "prep.cancel_sent": "[取消] 已向索引器发送取消信号…",
         "prep.already_running": "已有索引任务在运行中，忽略重复的分析请求。",
@@ -84,7 +84,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "display.font_sample": "示例：中文 / 日本語 / test  123 ABC",
         "display.font_missing": "  [有缺字！]",
         "display.viz_restart": "🔄 重启可视化窗口",
-        "display.viz_reset": "↺ 重置画面",
+        "display.viz_reset": "🔄 重置可视化窗口",
         "display.fullscreen_hint": "点击窗口后按 F 或 F11 全屏，Esc 退出。",
         "display.gpu_accel": "GPU 硬件加速（需重启可视化窗口）",
         "display.gpu_on": "[GPU] 硬件加速已开启，重启可视化窗口生效",
@@ -97,7 +97,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "display.viz_stopped": "● 已停止",
         "display.viz_mgr_unavailable": "[可视化] 可视化管理器不可用",
         "display.viz_restarting": "🔄 正在重启可视化窗口…",
-        "display.viz_reset_done": "↺ 可视化画面已重置",
+        "display.viz_reset_done": "🔄 可视化窗口已重置",
 
         # --- capture ---
         "cap.start": "开始采集",
@@ -105,6 +105,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "cap.stopped": "采集：已停止",
         "cap.running": "采集：运行中",
         "cap.monitoring": "采集：已停止（监听输入中）",
+        "cap.no_audio": "音频初始化失败：未检测到可用的音频设备或驱动（无声卡/驱动未安装/音频服务已禁用）。可视化等其他功能不受影响；连接声卡后请在控制台重新选择输入设备",
+        "cap.init_failed": "采集初始化失败",
+        "cap.start_failed": "采集启动失败",
+        "cap.monitor_unavailable": "输入监听不可用（设备 {device}）：{error}。请选择其他输入设备，或连接声卡后重试",
 
         # --- track ---
         "track.title": "当前曲目",
@@ -124,14 +128,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "viz.listening": "Listening…",
         "viz.mixing": "Mixing…",
         "viz.pending": "Pending ({cur}/{need})",
-        "viz.exited": "⚠ 可视化进程已退出 — 请点击『🔄 重启可视化窗口』按钮",
+        "viz.exited": "⚠ 可视化进程已退出 — 请点击『🔄 重置可视化窗口』按钮",
 
         # --- dialogs ---
-        "dlg.force_reindex_title": "强制重建索引",
+        "dlg.force_reindex_title": "强制重新分析",
         "dlg.force_reindex_msg": (
             "这将删除所有已存指纹（MySQL + SQLite），\n"
-            "并重新索引以下文件夹中的每一首歌：\n  {path}\n\n"
-            "当识别置信度偏低、或歌曲曾用错误参数索引时，\n"
+            "并重新分析以下文件夹中的每一首歌：\n  {path}\n\n"
+            "当识别置信度偏低、或歌曲曾用错误参数分析时，\n"
             "才使用此功能。\n\n确定继续？"
         ),
         "dlg.select_audio_title": "选择要分析的音频文件",
@@ -168,13 +172,13 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "prep.queue_count": "Queue: {n} files",
         "prep.analyze": "Analyze Queue",
         "prep.cancel": "✖ Cancel",
-        "prep.force_reindex": "⚠ Force Re-index",
+        "prep.force_reindex": "⚠ Force Re-analyze",
         "prep.refresh_status": "Refresh Status",
         "prep.unknown": "Library: Unknown",
         "prep.no_audio_in_folder": "[No audio files in folder: {path}]",
         "prep.folder_added": "+ Folder: {path} → {n} files queued",
-        "prep.force_reindex_cancelled": "Force re-index cancelled.",
-        "prep.force_reindex_start": "⚠ Force re-index: clearing all data and re-indexing {path}…",
+        "prep.force_reindex_cancelled": "Force re-analyze cancelled.",
+        "prep.force_reindex_start": "⚠ Force re-analyze: clearing all data and re-analyzing {path}…",
         "prep.queue_empty": "[Queue empty] Please select audio files first.",
         "prep.cancel_sent": "[Cancel] Sent cancel signal to indexer…",
         "prep.already_running": "Indexing already in progress, ignoring duplicate request.",
@@ -210,7 +214,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "display.font_sample": "Sample: 中文 / 日本語 / test  123 ABC",
         "display.font_missing": "  [missing glyphs!]",
         "display.viz_restart": "🔄 Restart Visualizer",
-        "display.viz_reset": "↺ Reset Screen",
+        "display.viz_reset": "🔄 Reset Visualizer",
         "display.fullscreen_hint": "Click window then press F or F11 for fullscreen, Esc to exit.",
         "display.gpu_accel": "GPU Hardware Acceleration (restart visualizer to apply)",
         "display.gpu_on": "[GPU] Hardware acceleration ON, restart visualizer to apply",
@@ -223,7 +227,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "display.viz_stopped": "● Stopped",
         "display.viz_mgr_unavailable": "[Visualizer] Visualizer manager unavailable",
         "display.viz_restarting": "🔄 Restarting visualizer window…",
-        "display.viz_reset_done": "↺ Visualizer screen reset",
+        "display.viz_reset_done": "🔄 Visualizer window reset",
 
         # --- capture ---
         "cap.start": "Start Capture",
@@ -231,6 +235,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "cap.stopped": "Capture: Stopped",
         "cap.running": "Capture: Running",
         "cap.monitoring": "Capture: Stopped (monitoring input)",
+        "cap.no_audio": "Audio init failed: no usable audio device or driver detected (no sound card / driver missing / audio service disabled). Visualizer and other features are unaffected; reconnect a sound card and reselect the input device",
+        "cap.init_failed": "Capture init failed",
+        "cap.start_failed": "Capture start failed",
+        "cap.monitor_unavailable": "Input monitor unavailable (device {device}): {error}. Pick another input device, or reconnect a sound card and retry",
 
         # --- track ---
         "track.title": "Current Track",
@@ -250,15 +258,15 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "viz.listening": "Listening…",
         "viz.mixing": "Mixing…",
         "viz.pending": "Pending ({cur}/{need})",
-        "viz.exited": "⚠ Visualizer process exited — click 『🔄 Restart Visualizer』",
+        "viz.exited": "⚠ Visualizer process exited — click 『🔄 Reset Visualizer』",
 
         # --- dialogs ---
-        "dlg.force_reindex_title": "Force Re-index",
+        "dlg.force_reindex_title": "Force Re-analyze",
         "dlg.force_reindex_msg": (
             "This will delete all stored fingerprints (MySQL + SQLite),\n"
-            "and re-index every song in:\n  {path}\n\n"
+            "and re-analyze every song in:\n  {path}\n\n"
             "Use only when recognition confidence is low,\n"
-            "or songs were indexed with wrong parameters.\n\nContinue?"
+            "or songs were analyzed with wrong parameters.\n\nContinue?"
         ),
         "dlg.select_audio_title": "Select audio files to analyze",
         "dlg.audio_files": "Audio files",

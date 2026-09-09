@@ -417,20 +417,18 @@ class DebugUI:
 
         viz_btn_row = ctk.CTkFrame(self.display_frame, fg_color="transparent")
         viz_btn_row.pack(fill="x", padx=8, pady=(0, 0))
-        self.viz_restart_btn = self._reg(
-            ctk.CTkButton(viz_btn_row, text=t("display.viz_restart"),
-                          width=180, fg_color="#c05621", hover_color="#dd6b20",
-                          command=self._on_viz_restart),
-            "display.viz_restart",
-        )
-        self.viz_restart_btn.pack(side="left")
+        # Single button: soft reset (back to standby) when the visualizer
+        # is alive, fresh spawn when the process exited / crashed. The
+        # old separate "restart" button killed+respawned the process and
+        # could flash-and-die due to a stale 'quit' left in the queue;
+        # reset() picks the right path automatically.
         self.viz_reset_btn = self._reg(
             ctk.CTkButton(viz_btn_row, text=t("display.viz_reset"),
-                          width=140, fg_color="#2b6cb0", hover_color="#3182ce",
+                          width=180, fg_color="#2b6cb0", hover_color="#3182ce",
                           command=self._on_viz_reset),
             "display.viz_reset",
         )
-        self.viz_reset_btn.pack(side="left", padx=4)
+        self.viz_reset_btn.pack(side="left")
         self.viz_status_label = ctk.CTkLabel(viz_btn_row, text="", text_color="gray")
         self.viz_status_label.pack(side="right")
         self._update_viz_status_label()
@@ -836,8 +834,19 @@ class DebugUI:
         if self.viz_mgr is None:
             self._append_log(t("display.viz_mgr_unavailable"))
             return
+        was_alive = self.viz_mgr.alive
         self.viz_mgr.reset()
         self._append_log(t("display.viz_reset_done"))
+        # Demo mode is runtime-only state: a fresh process starts at
+        # standby, and a soft reset returns to standby too — clear the
+        # checkbox so the UI doesn't claim demo is still active.
+        if getattr(self, "demo_var", None) is not None:
+            self.demo_var.set(False)
+        if not was_alive:
+            self._append_log(t("display.viz_restarting"))
+            self.root.after(400, self._update_viz_status_label)
+        else:
+            self.root.after(100, self._update_viz_status_label)
 
     def _on_gpu_toggle(self) -> None:
         from .config import SETTINGS, save_prefs
