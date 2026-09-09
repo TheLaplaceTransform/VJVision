@@ -39,14 +39,12 @@ def _compute_base_dirs() -> tuple[Path, Path, Path, Path]:
         exe_dir = Path(sys.executable).resolve().parent
         bundle_dir = Path(getattr(sys, "_MEIPASS", exe_dir))
         if sys.platform == "darwin":
-            # macOS frozen layout: VJVision.app/Contents/MacOS/VJVision.
-            # Keep portable data NEXT TO the .app bundle (writable, and
-            # copying the folder moves the data too) rather than inside
-            # the signed bundle.
             app_dir = exe_dir.parent.parent.parent
         else:
             app_dir = exe_dir
-        data_dir = app_dir / "data"
+
+        # 【修改这里】：将 data 目录指向 bundle_dir（即内嵌到 .app 内部的 _MEIPASS 中）
+        data_dir = bundle_dir / "data"
     else:
         app_dir = Path(__file__).resolve().parent.parent
         bundle_dir = app_dir

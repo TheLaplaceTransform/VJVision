@@ -28,7 +28,56 @@ from vjvision.visualizer import run as run_visualizer
 
 log = logging.getLogger("vj")
 
+import sys
+import os
 
+
+def _auto_detect_virtual_audio() -> Optional[int]:
+    """自动扫描并返回 Mac 上的虚拟声卡索引 (如 BlackHole) 以实现系统内录"""
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        try:
+            import pyaudio
+        except ImportError:
+            return None
+
+    try:
+        pa = pyaudio.PyAudio()
+    except Exception:
+        return None
+
+    target_keywords = ["BlackHole", "Soundflower", "VB-Cable", "Loopback"]
+    found_idx = None
+
+    try:
+        for i in range(pa.get_device_count()):
+            d = pa.get_device_info_by_index(i)
+            if int(d.get("maxInputChannels", 0)) > 0:
+                name = d.get("name", "")
+                if any(kw.lower() in name.lower() for kw in target_keywords):
+                    found_idx = i
+                    log.info(" 成功探测到系统级虚拟声卡 (内录设备): %s (索引: %d)", name, i)
+                    break
+    except Exception as e:
+        log.warning("扫描虚拟声卡时出错: %s", e)
+    finally:
+        try:
+            pa.terminate()
+        except Exception:
+            pass
+
+    return found_idx
+
+def get_resource_path(relative_path):
+    """获取程序运行时的绝对路径 (兼容开发环境和打包后的 .app)"""
+    if hasattr(sys, '_MEIPASS'):
+        # 运行被 PyInstaller 打包后的应用时，资源都在 _MEIPASS 目录下
+        base_path = sys._MEIPASS
+    else:
+        # 正常开发环境下运行时的路径
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 # --- Windows: suppress black console windows for ALL spawned child processes ---
 # Must run at module import time (before freeze_support / any Process spawn)
 # so it covers the visualizer process too, not just indexing workers.
@@ -304,7 +353,12 @@ def main() -> int:
     # __mp_main__ — doesn't rely on an import side effect; the child
     # loads prefs explicitly in visualizer.run().
     cfg.load_prefs()
-
+    # 自动劫持并使用虚拟声卡实现系统内录
+    virtual_device_idx = _auto_detect_virtual_audio()
+    if virtual_device_idx is not None:
+        cfg.SETTINGS.audio_device = virtual_device_idx
+    else:
+        log.info("未检测到 BlackHole 等虚拟声卡，将使用默认麦克风。")
     # Use multiprocessing with 'spawn' on Windows so the pygame child process
     # gets a fresh interpreter (avoids SDL fork issues).
     ctx = mp.get_context("spawn")
