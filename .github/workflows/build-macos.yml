@@ -35,6 +35,12 @@ jobs:
           python-version: '3.12'
 
       - name: Install PortAudio (for the vanilla pyaudio build)
+        # PyAudio ships no macOS wheels on PyPI, so it builds from sdist
+        # against PortAudio headers. Skip Homebrew's slow auto-update;
+        # the portaudio bottle pours in under a minute.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install portaudio
 
       - name: Install Python dependencies
