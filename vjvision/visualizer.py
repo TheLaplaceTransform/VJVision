@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import queue as _q
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -563,22 +564,38 @@ def _make_flowing_bg(
 # fonts known to carry CJK characters and pick the first one that actually
 # renders a sample CJK string without missing glyphs.
 
-_CJK_FONT_CANDIDATES = [
-    "Microsoft YaHei",      # Windows, Simplified Chinese
-    "Microsoft YaHei UI",
-    "Yu Gothic",            # Windows, Japanese
-    "Yu Gothic UI",
-    "MS Gothic",
-    "SimHei",               # Windows, Simplified Chinese (legacy)
-    "SimSun",
-    "Noto Sans CJK SC",     # Cross-platform fallback
-    "Noto Sans CJK JP",
-    "Source Han Sans SC",
-    "Source Han Sans JP",
-    "Arial Unicode MS",     # macOS fallback
-    "PingFang SC",          # macOS Simplified Chinese
-    "Hiragino Sans",        # macOS Japanese
-]
+# Platform-ordered: probe native UI fonts first so titles render in the
+# OS's standard CJK typeface, then fall back to cross-platform installs.
+if sys.platform == "darwin":
+    _CJK_FONT_CANDIDATES = [
+        "PingFang SC",          # macOS, Simplified Chinese
+        "PingFang TC",          # macOS, Traditional Chinese
+        "Hiragino Sans GB",     # macOS, Simplified Chinese (older name)
+        "Hiragino Sans",        # macOS, Japanese
+        "STHeiti",              # macOS legacy
+        "Arial Unicode MS",     # macOS fallback (Office)
+        "Noto Sans CJK SC",     # Cross-platform fallback
+        "Noto Sans CJK JP",
+        "Source Han Sans SC",
+        "Source Han Sans JP",
+    ]
+else:
+    _CJK_FONT_CANDIDATES = [
+        "Microsoft YaHei",      # Windows, Simplified Chinese
+        "Microsoft YaHei UI",
+        "Yu Gothic",            # Windows, Japanese
+        "Yu Gothic UI",
+        "MS Gothic",
+        "SimHei",               # Windows, Simplified Chinese (legacy)
+        "SimSun",
+        "Noto Sans CJK SC",     # Cross-platform fallback
+        "Noto Sans CJK JP",
+        "Source Han Sans SC",
+        "Source Han Sans JP",
+        "Arial Unicode MS",
+        "PingFang SC",          # macOS (in case the list runs elsewhere)
+        "Hiragino Sans",
+    ]
 
 _cjk_font_cache: str | None = None
 

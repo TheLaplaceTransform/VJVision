@@ -304,18 +304,34 @@ class FingerprintDB:
 
     @staticmethod
     def _find_ffmpeg() -> Optional[str]:
-        """Locate an ffmpeg executable: PATH first, then app-local dir."""
+        """Locate an ffmpeg executable.
+
+        Order: system ffmpeg on PATH (user-controlled) → ffmpeg shipped
+        next to the executable → the static binary bundled via the
+        ``imageio-ffmpeg`` pip package (guarantees the tolerant-decode
+        fallback works on machines — incl. macOS — without ffmpeg
+        installed; in PyInstaller builds the package data is collected
+        by VJVision.spec).
+        """
         import shutil
         exe = shutil.which("ffmpeg")
         if exe:
             return exe
-        # PyInstaller bundle / ffmpeg.exe shipped next to the executable.
+        # ffmpeg(.exe) shipped next to the executable.
         try:
             cand = os.path.join(
                 os.path.dirname(os.path.abspath(_sys.executable)),
                 "ffmpeg.exe" if os.name == "nt" else "ffmpeg",
             )
             if os.path.isfile(cand):
+                return cand
+        except Exception:
+            pass
+        # Static binary bundled with imageio-ffmpeg.
+        try:
+            import imageio_ffmpeg
+            cand = imageio_ffmpeg.get_ffmpeg_exe()
+            if cand and os.path.isfile(cand):
                 return cand
         except Exception:
             pass

@@ -1,0 +1,72 @@
+name: build-macos
+
+# macOS cloud builds (PyInstaller cannot cross-compile, so the .app/.dmg
+# must be built on macOS). On a `v*` tag the DMGs are uploaded to the
+# matching GitHub Release; manual runs (workflow_dispatch) attach them as
+# build artifacts for testing. Windows .exe builds stay local via
+# VJVision.spec / release.ps1.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build VJVision (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14      # Apple Silicon (M1/M2/M3/M4)
+            arch: arm64
+          - runner: macos-13      # Intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PortAudio (for the vanilla pyaudio build)
+        run: brew install portaudio
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build VJVision.app
+        run: pyinstaller VJVision.spec --noconfirm --clean
+
+      - name: Package DMG
+        run: |
+          DMG_NAME="VJVision-macos-${{ matrix.arch }}.dmg"
+          hdiutil create -volname VJVision -srcfolder dist/VJVision.app -ov -format UDZO "$DMG_NAME"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload DMG to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --prerelease --title "$TAG" \
+              --notes "VJVision $TAG — macOS automated build (unsigned; right-click → Open the first time)."
+          gh release upload "$TAG" "$DMG_NAME" --clobber
+
+      - name: Upload DMG as workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VJVision-macos-${{ matrix.arch }}
+          path: ${{ env.DMG_NAME }}
+          retention-days: 14

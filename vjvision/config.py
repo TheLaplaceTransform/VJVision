@@ -36,16 +36,32 @@ def _compute_base_dirs() -> tuple[Path, Path, Path, Path]:
       doesn't pollute PC B with PC A's PortAudio indexes.
     """
     if getattr(sys, "frozen", False):  # PyInstaller
-        app_dir = Path(sys.executable).resolve().parent
-        bundle_dir = Path(getattr(sys, "_MEIPASS", app_dir))
+        exe_dir = Path(sys.executable).resolve().parent
+        bundle_dir = Path(getattr(sys, "_MEIPASS", exe_dir))
+        if sys.platform == "darwin":
+            # macOS frozen layout: VJVision.app/Contents/MacOS/VJVision.
+            # Keep portable data NEXT TO the .app bundle (writable, and
+            # copying the folder moves the data too) rather than inside
+            # the signed bundle.
+            app_dir = exe_dir.parent.parent.parent
+        else:
+            app_dir = exe_dir
         data_dir = app_dir / "data"
     else:
         app_dir = Path(__file__).resolve().parent.parent
         bundle_dir = app_dir
         data_dir = app_dir / "cache"
-    # Per-machine prefs — always %APPDATA%\VJVision\, regardless of
-    # whether we're frozen or running as source.
-    prefs_dir = Path(os.environ.get("APPDATA", str(Path.home() / ".config"))) / "VJVision"
+    # Per-machine prefs: %APPDATA%\VJVision\ on Windows,
+    # ~/Library/Application Support/VJVision on macOS,
+    # $XDG_CONFIG_HOME/VJVision (or ~/.config) elsewhere.
+    if sys.platform == "darwin":
+        prefs_root = Path.home() / "Library" / "Application Support"
+    elif os.name == "nt":
+        prefs_root = Path(os.environ.get("APPDATA", str(Path.home())))
+    else:
+        prefs_root = Path(os.environ.get(
+            "XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    prefs_dir = prefs_root / "VJVision"
     return bundle_dir, app_dir, data_dir, prefs_dir
 
 
@@ -124,10 +140,19 @@ class VisualConfig:
     standby_image: str = ""
 
 
+def _default_music_dir() -> Path:
+    """Default music-library root per platform (overridable in the UI)."""
+    if sys.platform == "darwin":
+        return Path.home() / "Music" / "DJMusLib"
+    if os.name == "nt":
+        return Path(r"D:\DJMusLib")
+    return Path.home() / "Music" / "DJMusLib"
+
+
 @dataclass
 class Settings:
     # Music library root - override in the UI or here.
-    music_dir: Path = Path(r"D:\DJMusLib")
+    music_dir: Path = field(default_factory=_default_music_dir)
     mysql: MySQLConfig = field(default_factory=MySQLConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     visual: VisualConfig = field(default_factory=VisualConfig)

@@ -30,9 +30,9 @@ VJVision listens to the DJ booth output, auto-recognises the currently playing t
 
 | 项目 Item | 要求 Requirement |
 |------|------|
-| 操作系统 OS | Windows 10 / 11 |
-| Python（开发 dev） | 3.13+ |
-| 音频输入 Audio input | 支持 WASAPI / DirectSound / MME 的声卡或虚拟音频线 |
+| 操作系统 OS | Windows 10 / 11；macOS 11+（Intel 与 Apple Silicon 均提供 DMG / DMGs for both Intel & Apple Silicon） |
+| Python（开发 dev） | 3.13+（Windows）；macOS 源码运行需先 `brew install portaudio` |
+| 音频输入 Audio input | Windows：支持 WASAPI / DirectSound / MME 的声卡或虚拟音频线；macOS：USB 声卡 / 麦克风 / 线路输入直连可用，内录系统声音需 BlackHole（见下文） |
 | 显示器 Displays | 至少 1 块；推荐 2 块（控制 + 投影） |
 
 ## 快速开始 / Quick Start（exe 用户 / for exe users）
@@ -41,6 +41,17 @@ VJVision listens to the DJ booth output, auto-recognises the currently playing t
    Download the latest `VJVision.exe` from [Releases](https://github.com/ichiryu0021/VJVision/releases)
 2. 双击运行，首次启动会在 exe 同级目录生成 `data/` 文件夹
    Double-click to run; first launch creates a `data/` folder next to the exe
+
+### macOS 用户 / macOS users
+
+1. 从 [Releases](https://github.com/ichiryu0021/VJVision/releases) 下载与芯片对应的 DMG：Apple Silicon（M1/M2/M3/M4）→ `VJVision-macos-arm64.dmg`；Intel → `VJVision-macos-x86_64.dmg`
+   Download the DMG matching your Mac from [Releases](https://github.com/ichiryu0021/VJVision/releases): Apple Silicon (M-series) → `VJVision-macos-arm64.dmg`; Intel → `VJVision-macos-x86_64.dmg`
+2. 打开 DMG，把 **VJVision** 拖入「应用程序 / Applications」。首次启动请**右键点按 → 打开**（应用未做苹果签名，双击会被 Gatekeeper 拦截，右键打开一次后即可正常启动）
+   Open the DMG and drag **VJVision** to Applications. On first launch **right-click → Open** (the app is not Apple-notarized, so double-click is blocked by Gatekeeper; after one right-click open it launches normally)
+3. 首次运行会在 `VJVision.app` 同级目录生成 `data/` 文件夹（指纹库、封面缓存等便携数据，拷贝该文件夹即可迁移分析结果）
+   First launch creates a `data/` folder next to `VJVision.app` (portable fingerprint DB / cover cache; copy the folder to migrate analysis results)
+4. **录制电脑内部播放的声音**（识别 Mac 自己放的歌）：macOS 没有系统级内录 API，需安装一次免费开源的 [BlackHole](https://existential.audio/blackhole/) 虚拟声卡（`brew install --cask blackhole-2ch`），并在「音频 MIDI 设置」中创建多输出设备让声音同时送往耳机和 BlackHole，然后在 VJVision 设备下拉里选 BlackHole。**USB 声卡 / 麦克风 / 线路输入无需任何额外安装**，直接在下拉框选择即可
+   To capture the Mac's own audio output: macOS has no system loopback API — install the free open-source [BlackHole](https://existential.audio/blackhole/) virtual driver once (`brew install --cask blackhole-2ch`), create a Multi-Output Device in Audio MIDI Setup so sound goes to both your headphones and BlackHole, then pick BlackHole in VJVision's device dropdown. **USB soundcards / mics / line-in need no extra setup** — just select them in the dropdown
 
 ### 使用流程 / Workflow
 
@@ -97,15 +108,34 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## 打包 exe / Build exe
+macOS 源码运行前需先安装 PortAudio（vanilla pyaudio 编译依赖）/ On macOS install PortAudio first:
+
+```bash
+brew install portaudio
+```
+
+## 打包 / Build
+
+Windows（产物 / output: `dist/VJVision.exe`）：
 
 ```bash
 python -m PyInstaller VJVision.spec --noconfirm --clean
-# 产物 Output: dist/VJVision.exe
 ```
 
-或使用一键发布脚本（构建 + 提交 + 推送 + 创建 GitHub Release）：
-Or use the one-click release script (build + commit + push + create GitHub Release):
+macOS（产物 / output: `dist/VJVision.app`）：
+
+```bash
+pip install pyinstaller
+pyinstaller VJVision.spec --noconfirm --clean
+# 可选：打成 DMG / optional DMG packaging:
+hdiutil create -volname VJVision -srcfolder dist/VJVision.app -ov -format UDZO VJVision-macos.dmg
+```
+
+> macOS 的 DMG 由 GitHub Actions 自动构建：推送 `v*` 标签后，云端 Mac（Intel + Apple Silicon）自动打包并上传到对应 Release，无需本地有 Mac。
+> macOS DMGs are built automatically by GitHub Actions: pushing a `v*` tag builds on cloud Macs (Intel + Apple Silicon) and uploads both DMGs to the Release — no local Mac required.
+
+或使用一键发布脚本（Windows：构建 + 提交 + 推送 + 创建 GitHub Release）：
+Or use the one-click release script (Windows: build + commit + push + create GitHub Release):
 
 ```powershell
 .\release.ps1 -Version 1.2.0-beta -Notes "GPU acceleration beta"
@@ -119,7 +149,7 @@ Or use the one-click release script (build + commit + push + create GitHub Relea
 | `data/song_paths.sqlite` | 歌曲 ID → 文件路径索引 / Song ID → file path index | ✅ |
 | `data/covers/` | 专辑封面缓存 / Album cover cache | ✅ |
 | `data/vjvision.log` | 运行日志 / Runtime log | ✅ |
-| `%APPDATA%/VJVision/prefs.json` | 音频设备、显示器、语言等本机偏好 / Per-machine prefs (device, display, language) | ❌ 每台机器独立 / per-machine |
+| `%APPDATA%/VJVision/prefs.json`（Windows）<br>`~/Library/Application Support/VJVision/prefs.json`（macOS） | 音频设备、显示器、语言等本机偏好 / Per-machine prefs (device, display, language) | ❌ 每台机器独立 / per-machine |
 
 > 在 A 电脑分析完曲库后，把 `VJVision.exe` + `data/` 一起拷到 U 盘，插到 B 电脑即可直接使用，无需重新分析。
 > After analysing the library on PC A, copy `VJVision.exe` + `data/` to a USB stick and run on PC B — no re-analysis needed.
@@ -158,6 +188,14 @@ Tunable in `vjvision/config.py` → `CaptureConfig`:
 **Q：关闭控制台后可视化窗口没关？ / Visualizer stays open after closing console?**
 - v1.1.1+ 已修复：可视化子进程会检测父进程存活，主进程退出后自动关闭
   Fixed in v1.1.1+: the visualizer child detects parent liveness and exits automatically
+
+**Q：macOS 上设备列表为空 / 提示无音频设备？ / Empty device list on macOS?**
+- 首次采集时系统会弹出**麦克风权限**请求：请到「系统设置 → 隐私与安全性 → 麦克风」允许 VJVision（BlackHole 等虚拟设备也走同一权限）；未签名应用首次请用右键→打开启动
+  macOS prompts for **Microphone** permission on first capture: allow VJVision in System Settings → Privacy & Security → Microphone (virtual devices like BlackHole use the same permission). Remember to launch the unsigned app via right-click → Open the first time
+
+**Q：下载来的歌曲分析失败（文件损坏）？ / A downloaded song fails analysis (corrupt file)?**
+- v1.2.1+ 已内置 ffmpeg 容错解码：soundfile 解码失败时自动用内置 ffmpeg 跳过坏帧继续分析，日志会标注 `Recovered via ffmpeg fallback`；无需自行安装 ffmpeg
+  v1.2.1+ bundles ffmpeg tolerant decoding: when soundfile fails, the bundled ffmpeg skips broken frames and analysis continues (logged as `Recovered via ffmpeg fallback`); no manual ffmpeg install needed
 
 ## 技术架构 / Architecture
 
